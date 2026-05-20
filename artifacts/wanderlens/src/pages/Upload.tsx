@@ -16,8 +16,6 @@ export default function Upload() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const uploadPhoto = useUploadPhoto();
-  const regroupPhotos = useRegroupPhotos();
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
