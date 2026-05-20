@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { useUploadPhoto, useRegroupPhotos, getGetStatsQueryKey, getListTripsQueryKey, getGetTripsMapQueryKey } from "@workspace/api-client-react";
+import { getGetStatsQueryKey, getListTripsQueryKey, getGetTripsMapQueryKey } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { UploadCloud, FileImage, Loader2, CheckCircle2, Sparkles } from "lucide-react";
@@ -62,20 +62,22 @@ export default function Upload() {
     setGroupingResult(null);
 
     let successCount = 0;
+    const tripIds = new Set<number>();
     
     for (let i = 0; i < files.length; i++) {
       try {
         const formData = new FormData();
         formData.append('file', files[i]);
         
-        // Use native fetch to bypass Orval wrapper constraints for FormData
         const response = await fetch('/api/photos/upload', {
           method: 'POST',
           body: formData
         });
         
         if (!response.ok) throw new Error('Upload failed');
+        const data = await response.json();
         successCount++;
+        if (data.tripId != null) tripIds.add(data.tripId);
       } catch (err) {
         console.error("Failed to upload", files[i].name, err);
       }
@@ -83,30 +85,17 @@ export default function Upload() {
     }
 
     if (successCount > 0) {
-      toast({
-        title: "Upload complete",
-        description: `Successfully uploaded ${successCount} photos. Analyzing metadata...`
-      });
+      // Build result from actual upload responses — regroup only handles
+      // photos that weren't assigned yet, which is none since upload assigns on the fly
+      setGroupingResult({ photosGrouped: successCount, tripsCreated: tripIds.size });
 
-      // Trigger automatic trip grouping
-      try {
-        const result = await regroupPhotos.mutateAsync({});
-        setGroupingResult(result);
-        
-        // Invalidate queries to update UI globally
-        queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
-        
-        // Clear queue
-        setFiles([]);
-      } catch (err) {
-        toast({
-          title: "Grouping failed",
-          description: "Failed to automatically group photos into trips.",
-          variant: "destructive"
-        });
-      }
+      // Invalidate queries to refresh map, stats, and trip lists
+      queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
+
+      // Clear queue
+      setFiles([]);
     }
 
     setUploading(false);
