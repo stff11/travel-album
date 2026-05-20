@@ -21,9 +21,41 @@ function daysDiff(a: Date, b: Date): number {
   return Math.abs(a.getTime() - b.getTime()) / (1000 * 60 * 60 * 24);
 }
 
-function generateTripName(centerLat: number, centerLng: number, startDate: Date): string {
+async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "WanderLens/1.0 travel-memory-app" },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      address?: {
+        city?: string;
+        town?: string;
+        village?: string;
+        county?: string;
+        state?: string;
+        country?: string;
+        country_code?: string;
+      };
+    };
+    const addr = data.address;
+    if (!addr) return null;
+    const place = addr.city ?? addr.town ?? addr.village ?? addr.county ?? addr.state;
+    const country = addr.country;
+    if (place && country) return `${place}, ${country}`;
+    if (country) return country;
+    return null;
+  } catch (err) {
+    logger.warn({ err }, "Reverse geocode failed");
+    return null;
+  }
+}
+
+function generateTripName(locationName: string | null, startDate: Date): string {
   const month = startDate.toLocaleString("en-US", { month: "long" });
   const year = startDate.getFullYear();
+  if (locationName) return locationName;
   return `${month} ${year} Trip`;
 }
 
@@ -56,8 +88,7 @@ function groupPhotosIntoTrips(photos: PhotoRow[]): TripGroup[] {
     let assigned = false;
     for (const group of groups) {
       const distOk = haversineKm(photo.lat, photo.lng, group.centerLat, group.centerLng) <= MAX_DISTANCE_KM;
-      const lastDate = group.endDate;
-      const timeOk = daysDiff(photo.takenAt, lastDate) <= MAX_DAYS_GAP;
+      const timeOk = daysDiff(photo.takenAt, group.endDate) <= MAX_DAYS_GAP;
 
       if (distOk && timeOk) {
         group.photos.push(photo);
@@ -103,15 +134,18 @@ export async function regroupAllPhotos(): Promise<{ tripsCreated: number; photos
   for (const group of groups) {
     if (group.photos.length === 0) continue;
 
+    const locationName = await reverseGeocode(group.centerLat, group.centerLng);
+
     const [trip] = await db
       .insert(tripsTable)
       .values({
-        name: generateTripName(group.centerLat, group.centerLng, group.startDate),
+        name: generateTripName(locationName, group.startDate),
         startDate: group.startDate,
         endDate: group.endDate,
         coverPhotoId: group.photos[0].id,
         centerLat: group.centerLat,
         centerLng: group.centerLng,
+        locationName,
         photoCount: group.photos.length,
       })
       .returning();
@@ -125,7 +159,7 @@ export async function regroupAllPhotos(): Promise<{ tripsCreated: number; photos
     }
 
     tripsCreated++;
-    logger.info({ tripId: trip.id, photoCount: group.photos.length }, "Created trip");
+    logger.info({ tripId: trip.id, photoCount: group.photos.length, locationName }, "Created trip");
   }
 
   return { tripsCreated, photosGrouped };
@@ -149,9 +183,8 @@ export async function assignPhotoToTrip(photo: PhotoRow): Promise<number | null>
 
     if (distOk && timeOk) {
       const newCount = trip.photoCount + 1;
-      const n = newCount;
-      const newCenterLat = (trip.centerLat * (n - 1) + photoLat) / n;
-      const newCenterLng = (trip.centerLng * (n - 1) + photoLng) / n;
+      const newCenterLat = (trip.centerLat * (newCount - 1) + photoLat) / newCount;
+      const newCenterLng = (trip.centerLng * (newCount - 1) + photoLng) / newCount;
       const newStart = photoDate < trip.startDate ? photoDate : trip.startDate;
       const newEnd = photoDate > trip.endDate ? photoDate : trip.endDate;
 
@@ -170,18 +203,23 @@ export async function assignPhotoToTrip(photo: PhotoRow): Promise<number | null>
     }
   }
 
+  // No matching trip — create a new one with reverse geocoding
+  const locationName = await reverseGeocode(photoLat, photoLng);
+
   const [newTrip] = await db
     .insert(tripsTable)
     .values({
-      name: generateTripName(photoLat, photoLng, photoDate),
+      name: generateTripName(locationName, photoDate),
       startDate: photoDate,
       endDate: photoDate,
       coverPhotoId: photo.id,
       centerLat: photoLat,
       centerLng: photoLng,
+      locationName,
       photoCount: 1,
     })
     .returning();
 
+  logger.info({ tripId: newTrip.id, locationName }, "New trip created via reverse geocode");
   return newTrip.id;
 }

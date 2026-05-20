@@ -3,7 +3,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { db, photosTable, tripsTable } from "@workspace/db";
-import { eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   ListPhotosQueryParams,
   GetPhotoParams,
@@ -13,10 +13,19 @@ import {
   RegroupPhotosResponse,
 } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
-import { assignPhotoToTrip } from "../lib/tripGrouping";
-import { regroupAllPhotos } from "../lib/tripGrouping";
+import { assignPhotoToTrip, regroupAllPhotos } from "../lib/tripGrouping";
 
 const router: IRouter = Router();
+
+type DbPhoto = typeof photosTable.$inferSelect;
+
+function serializePhoto(p: DbPhoto) {
+  return {
+    ...p,
+    takenAt: p.takenAt?.toISOString() ?? null,
+    createdAt: p.createdAt.toISOString(),
+  };
+}
 
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -46,7 +55,7 @@ const upload = multer({
   },
 });
 
-async function extractExif(filePath: string, mimeType: string): Promise<{
+async function extractExif(filePath: string): Promise<{
   lat: number | null;
   lng: number | null;
   altitude: number | null;
@@ -78,11 +87,11 @@ async function extractExif(filePath: string, mimeType: string): Promise<{
     }
     if (data.GPSAltitude != null) altitude = data.GPSAltitude;
 
-    const dateStr = data.DateTimeOriginal ?? data.DateTime ?? data.CreateDate;
-    if (dateStr instanceof Date) {
-      takenAt = dateStr;
-    } else if (typeof dateStr === "string") {
-      const d = new Date(dateStr);
+    const dateVal = data.DateTimeOriginal ?? data.DateTime ?? data.CreateDate;
+    if (dateVal instanceof Date) {
+      takenAt = dateVal;
+    } else if (typeof dateVal === "string") {
+      const d = new Date(dateVal);
       if (!isNaN(d.getTime())) takenAt = d;
     }
 
@@ -104,7 +113,7 @@ async function extractExif(filePath: string, mimeType: string): Promise<{
 
     return { lat, lng, altitude, takenAt, width, height };
   } catch (err) {
-    logger.warn({ err }, "EXIF extraction failed");
+    logger.warn({ err }, "EXIF extraction failed, falling back to sharp");
     try {
       const sharp = (await import("sharp")).default;
       const meta = await sharp(filePath).metadata();
@@ -126,12 +135,11 @@ router.get("/photos", async (req, res): Promise<void> => {
     return;
   }
 
-  let query = db.select().from(photosTable);
   const photos = params.data.tripId
     ? await db.select().from(photosTable).where(eq(photosTable.tripId, params.data.tripId))
     : await db.select().from(photosTable);
 
-  res.json(ListPhotosResponse.parse(photos));
+  res.json(ListPhotosResponse.parse(photos.map(serializePhoto)));
 });
 
 router.post("/photos/regroup", async (req, res): Promise<void> => {
@@ -167,7 +175,7 @@ router.post(
           format: "JPEG",
           quality: 0.92,
         });
-        const jpegPath = file.path.replace(/\.heic$/i, ".jpg").replace(/\.heif$/i, ".jpg");
+        const jpegPath = file.path.replace(/\.(heic|heif)$/i, ".jpg");
         const finalPath = jpegPath === file.path ? `${file.path}.jpg` : jpegPath;
         fs.writeFileSync(finalPath, Buffer.from(outputBuffer));
         fs.unlinkSync(file.path);
@@ -179,7 +187,7 @@ router.post(
       }
     }
 
-    const exif = await extractExif(actualPath, actualMime);
+    const exif = await extractExif(actualPath);
     const filename = path.basename(actualPath);
 
     const [photo] = await db
@@ -214,7 +222,7 @@ router.post(
     }
 
     req.log.info({ photoId: photo.id, tripId }, "Photo uploaded");
-    res.status(201).json(GetPhotoResponse.parse(photo));
+    res.status(201).json(GetPhotoResponse.parse(serializePhoto(photo)));
   }
 );
 
@@ -245,7 +253,7 @@ router.get("/photos/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  res.json(GetPhotoResponse.parse(photo));
+  res.json(GetPhotoResponse.parse(serializePhoto(photo)));
 });
 
 router.delete("/photos/:id", async (req, res): Promise<void> => {
