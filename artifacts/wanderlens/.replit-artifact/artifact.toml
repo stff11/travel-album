@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "WanderLens"
+version = "1.0.0"
+id = "artifacts/wanderlens"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26093
+
+[services.development]
+run = "pnpm --filter @workspace/wanderlens run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/wanderlens", "run", "build" ]
+publicDir = "artifacts/wanderlens/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26093"
+BASE_PATH = "/"
