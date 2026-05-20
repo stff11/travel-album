@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, photosTable, tripsTable } from "@workspace/db";
-import { eq, asc, desc, count } from "drizzle-orm";
+import { eq, asc, desc } from "drizzle-orm";
 import {
   GetTripParams,
   UpdateTripParams,
@@ -17,15 +17,32 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
-function buildTripWithCover(trip: typeof tripsTable.$inferSelect, coverPhoto?: typeof photosTable.$inferSelect | null) {
+type DbPhoto = typeof photosTable.$inferSelect;
+type DbTrip = typeof tripsTable.$inferSelect;
+
+function serializePhoto(p: DbPhoto) {
+  return {
+    ...p,
+    takenAt: p.takenAt?.toISOString() ?? null,
+    createdAt: p.createdAt.toISOString(),
+  };
+}
+
+function serializeTrip(trip: DbTrip, coverPhotoFilename: string | null) {
   return {
     ...trip,
     startDate: trip.startDate.toISOString(),
     endDate: trip.endDate.toISOString(),
     createdAt: trip.createdAt.toISOString(),
     updatedAt: trip.updatedAt.toISOString(),
-    coverPhotoPath: coverPhoto?.filename ?? null,
+    coverPhotoPath: coverPhotoFilename,
   };
+}
+
+async function getCoverFilename(tripId: number | null | undefined, coverPhotoId: number | null | undefined): Promise<string | null> {
+  if (!coverPhotoId) return null;
+  const [p] = await db.select().from(photosTable).where(eq(photosTable.id, coverPhotoId));
+  return p?.filename ?? null;
 }
 
 router.get("/trips", async (req, res): Promise<void> => {
@@ -33,12 +50,8 @@ router.get("/trips", async (req, res): Promise<void> => {
 
   const result = await Promise.all(
     trips.map(async (trip) => {
-      let coverPhoto = null;
-      if (trip.coverPhotoId) {
-        const [p] = await db.select().from(photosTable).where(eq(photosTable.id, trip.coverPhotoId));
-        coverPhoto = p ?? null;
-      }
-      return buildTripWithCover(trip, coverPhoto);
+      const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+      return serializeTrip(trip, cover);
     })
   );
 
@@ -46,22 +59,11 @@ router.get("/trips", async (req, res): Promise<void> => {
 });
 
 router.get("/trips/map", async (req, res): Promise<void> => {
-  const trips = await db
-    .select()
-    .from(tripsTable)
-    .where(
-      // Only trips that have coordinates
-      eq(tripsTable.photoCount, tripsTable.photoCount)
-    )
-    .orderBy(desc(tripsTable.startDate));
+  const trips = await db.select().from(tripsTable).orderBy(desc(tripsTable.startDate));
 
   const result = await Promise.all(
     trips.map(async (trip) => {
-      let coverPhotoPath = null;
-      if (trip.coverPhotoId) {
-        const [p] = await db.select().from(photosTable).where(eq(photosTable.id, trip.coverPhotoId));
-        coverPhotoPath = p?.filename ?? null;
-      }
+      const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
       return {
         id: trip.id,
         name: trip.name,
@@ -70,7 +72,7 @@ router.get("/trips/map", async (req, res): Promise<void> => {
         photoCount: trip.photoCount,
         startDate: trip.startDate.toISOString(),
         endDate: trip.endDate.toISOString(),
-        coverPhotoPath,
+        coverPhotoPath: cover,
         locationName: trip.locationName ?? null,
       };
     })
@@ -94,13 +96,8 @@ router.get("/trips/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  let coverPhoto = null;
-  if (trip.coverPhotoId) {
-    const [p] = await db.select().from(photosTable).where(eq(photosTable.id, trip.coverPhotoId));
-    coverPhoto = p ?? null;
-  }
-
-  res.json(GetTripResponse.parse(buildTripWithCover(trip, coverPhoto)));
+  const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+  res.json(GetTripResponse.parse(serializeTrip(trip, cover)));
 });
 
 router.patch("/trips/:id", async (req, res): Promise<void> => {
@@ -128,13 +125,8 @@ router.patch("/trips/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  let coverPhoto = null;
-  if (trip.coverPhotoId) {
-    const [p] = await db.select().from(photosTable).where(eq(photosTable.id, trip.coverPhotoId));
-    coverPhoto = p ?? null;
-  }
-
-  res.json(UpdateTripResponse.parse(buildTripWithCover(trip, coverPhoto)));
+  const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+  res.json(UpdateTripResponse.parse(serializeTrip(trip, cover)));
 });
 
 router.delete("/trips/:id", async (req, res): Promise<void> => {
@@ -180,7 +172,7 @@ router.get("/trips/:id/photos", async (req, res): Promise<void> => {
     .where(eq(photosTable.tripId, params.data.id))
     .orderBy(asc(photosTable.takenAt));
 
-  res.json(GetTripPhotosResponse.parse(photos));
+  res.json(GetTripPhotosResponse.parse(photos.map(serializePhoto)));
 });
 
 export default router;
