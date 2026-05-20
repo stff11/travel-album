@@ -9,6 +9,7 @@ export const photosTable = pgTable("photos", {
   filePath: text("file_path").notNull(),
   mimeType: text("mime_type").notNull(),
   fileSize: integer("file_size").notNull(),
+  fileHash: text("file_hash"),
   width: integer("width"),
   height: integer("height"),
   lat: real("lat"),

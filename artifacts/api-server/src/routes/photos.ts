@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { db, photosTable, tripsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import {
@@ -187,6 +188,26 @@ router.post(
       }
     }
 
+    // Compute SHA-256 hash of final file for deduplication
+    const fileHash = crypto
+      .createHash("sha256")
+      .update(fs.readFileSync(actualPath))
+      .digest("hex");
+
+    // Check for duplicate
+    const [existing] = await db
+      .select()
+      .from(photosTable)
+      .where(eq(photosTable.fileHash, fileHash));
+
+    if (existing) {
+      // Remove the newly uploaded file — it's a duplicate
+      try { fs.unlinkSync(actualPath); } catch (_e) {}
+      req.log.info({ photoId: existing.id, fileHash }, "Duplicate photo ignored");
+      res.status(201).json(GetPhotoResponse.parse(serializePhoto(existing)));
+      return;
+    }
+
     const exif = await extractExif(actualPath);
     const filename = path.basename(actualPath);
 
@@ -198,6 +219,7 @@ router.post(
         filePath: actualPath,
         mimeType: actualMime,
         fileSize: fs.statSync(actualPath).size,
+        fileHash,
         width: exif.width,
         height: exif.height,
         lat: exif.lat,
