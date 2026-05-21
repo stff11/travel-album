@@ -34,7 +34,9 @@ interface UploadQueueContextType {
 
 const UploadQueueContext = createContext<UploadQueueContextType | null>(null);
 
-const CONCURRENCY = 3;
+// Keep at 1 to avoid race conditions in trip assignment:
+// concurrent uploads can each see "no matching trip" and create duplicates.
+const CONCURRENCY = 1;
 
 export function UploadQueueProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<QueuedFile[]>([]);
