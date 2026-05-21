@@ -21,6 +21,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { photoUrl, thumbUrl } from "@/lib/photoUrl";
 
 type Photo = {
   id: number;
@@ -36,6 +37,8 @@ type Photo = {
   height: number | null;
   mimeType: string;
   filePath: string;
+  cloudinaryUrl?: string | null;
+  cloudinaryPublicId?: string | null;
 };
 
 function Lightbox({
@@ -108,7 +111,7 @@ function Lightbox({
             initial={{ opacity: 0, scale: 0.97 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.2 }}
-            src={`/api/photos/file/${photo.filename}`}
+            src={photoUrl(photo)}
             alt={photo.originalName}
             className="max-w-[90vw] max-h-[90vh] object-contain select-none rounded"
             onClick={(e) => e.stopPropagation()}
@@ -201,7 +204,7 @@ export default function TripDetail() {
   if (!trip) return <div className="p-8 text-muted-foreground">Trip not found.</div>;
 
   const coverUrl = trip.coverPhotoPath
-    ? `/api/photos/file/${trip.coverPhotoPath.split("/").pop()}`
+    ? thumbUrl({ cloudinaryUrl: (trip as any).coverCloudinaryUrl ?? null, filename: trip.coverPhotoPath.split("/").pop() ?? "" }, 1600)
     : null;
 
   const photoList = (photos ?? []) as Photo[];
@@ -313,7 +316,7 @@ export default function TripDetail() {
                     data-testid={`photo-grid-item-${photo.id}`}
                   >
                     <img
-                      src={`/api/photos/file/${photo.filename}`}
+                      src={thumbUrl(photo, 400)}
                       alt={photo.originalName}
                       className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
                       loading="lazy"

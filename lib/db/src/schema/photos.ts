@@ -10,6 +10,8 @@ export const photosTable = pgTable("photos", {
   mimeType: text("mime_type").notNull(),
   fileSize: integer("file_size").notNull(),
   fileHash: text("file_hash"),
+  cloudinaryPublicId: text("cloudinary_public_id"),
+  cloudinaryUrl: text("cloudinary_url"),
   width: integer("width"),
   height: integer("height"),
   lat: real("lat"),

@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { TripMapPin } from "@workspace/api-client-react";
 import { Link } from "wouter";
+import { thumbUrl } from "@/lib/photoUrl";
 
 interface WorldMapProps {
   pins: TripMapPin[];
@@ -75,7 +76,7 @@ export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
                   {pin.coverPhotoPath && (
                      <div className="w-full h-24 overflow-hidden rounded-md">
                        <img 
-                         src={`/api/photos/file/${pin.coverPhotoPath.split('/').pop()}`} 
+                         src={thumbUrl({ cloudinaryUrl: (pin as any).coverCloudinaryUrl ?? null, filename: pin.coverPhotoPath?.split('/').pop() ?? '' }, 300)}
                          alt={pin.name}
                          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
                        />

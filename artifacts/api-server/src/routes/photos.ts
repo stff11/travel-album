@@ -15,6 +15,7 @@ import {
 } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
 import { assignPhotoToTrip, regroupAllPhotos } from "../lib/tripGrouping";
+import { uploadToCloudinary, deleteFromCloudinary } from "../lib/cloudinary";
 
 const router: IRouter = Router();
 
@@ -188,7 +189,7 @@ router.post(
       }
     }
 
-    // Compute SHA-256 hash of final file for deduplication
+    // Compute SHA-256 hash for deduplication
     const fileHash = crypto
       .createHash("sha256")
       .update(fs.readFileSync(actualPath))
@@ -201,14 +202,33 @@ router.post(
       .where(eq(photosTable.fileHash, fileHash));
 
     if (existing) {
-      // Remove the newly uploaded file — it's a duplicate
       try { fs.unlinkSync(actualPath); } catch (_e) {}
       req.log.info({ photoId: existing.id, fileHash }, "Duplicate photo ignored");
       res.status(201).json(GetPhotoResponse.parse(serializePhoto(existing)));
       return;
     }
 
+    // Extract EXIF before uploading (needs local file)
     const exif = await extractExif(actualPath);
+
+    // Upload to Cloudinary
+    let cloudinaryPublicId: string | null = null;
+    let cloudinaryUrl: string | null = null;
+    let cdnWidth = exif.width;
+    let cdnHeight = exif.height;
+
+    try {
+      const cdn = await uploadToCloudinary(actualPath);
+      cloudinaryPublicId = cdn.publicId;
+      cloudinaryUrl = cdn.secureUrl;
+      if (cdn.width) cdnWidth = cdn.width;
+      if (cdn.height) cdnHeight = cdn.height;
+      // Remove local file after successful Cloudinary upload
+      try { fs.unlinkSync(actualPath); } catch (_e) {}
+    } catch (err) {
+      logger.warn({ err }, "Cloudinary upload failed, keeping local file as fallback");
+    }
+
     const filename = path.basename(actualPath);
 
     const [photo] = await db
@@ -216,12 +236,14 @@ router.post(
       .values({
         filename,
         originalName: file.originalname,
-        filePath: actualPath,
+        filePath: cloudinaryUrl ?? actualPath,
         mimeType: actualMime,
-        fileSize: fs.statSync(actualPath).size,
+        fileSize: fs.existsSync(actualPath) ? fs.statSync(actualPath).size : file.size,
         fileHash,
-        width: exif.width,
-        height: exif.height,
+        cloudinaryPublicId,
+        cloudinaryUrl,
+        width: cdnWidth,
+        height: cdnHeight,
         lat: exif.lat,
         lng: exif.lng,
         altitude: exif.altitude,
@@ -243,11 +265,12 @@ router.post(
       photo.tripId = tripId;
     }
 
-    req.log.info({ photoId: photo.id, tripId }, "Photo uploaded");
+    req.log.info({ photoId: photo.id, tripId, cloudinaryPublicId }, "Photo uploaded");
     res.status(201).json(GetPhotoResponse.parse(serializePhoto(photo)));
   }
 );
 
+// Serve local files (fallback for photos uploaded before Cloudinary)
 router.get("/photos/file/:filename", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
   const filename = path.basename(raw);
@@ -311,12 +334,18 @@ router.delete("/photos/:id", async (req, res): Promise<void> => {
     }
   }
 
-  try {
-    if (photo.filePath && fs.existsSync(photo.filePath)) {
-      fs.unlinkSync(photo.filePath);
+  // Delete from Cloudinary if stored there
+  if (photo.cloudinaryPublicId) {
+    await deleteFromCloudinary(photo.cloudinaryPublicId);
+  } else {
+    // Fallback: delete local file
+    try {
+      if (photo.filePath && fs.existsSync(photo.filePath)) {
+        fs.unlinkSync(photo.filePath);
+      }
+    } catch (err) {
+      logger.warn({ err }, "Could not delete local file");
     }
-  } catch (err) {
-    logger.warn({ err }, "Could not delete file");
   }
 
   res.sendStatus(204);

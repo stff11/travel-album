@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { Link } from "wouter";
 import { format } from "date-fns";
 import { MapPin } from "lucide-react";
+import { thumbUrl } from "@/lib/photoUrl";
 
 export default function Trips() {
   const { data: trips, isLoading } = useListTrips({ query: { queryKey: getListTripsQueryKey() }});
@@ -46,7 +47,10 @@ export default function Trips() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 auto-rows-[300px]">
             {trips?.map((trip, i) => {
-              const coverUrl = trip.coverPhotoPath ? `/api/photos/file/${trip.coverPhotoPath.split('/').pop()}` : null;
+              const url = trip.coverPhotoPath
+                ? thumbUrl({ cloudinaryUrl: (trip as any).coverCloudinaryUrl ?? null, filename: trip.coverPhotoPath.split('/').pop() ?? '' }, 800)
+                : null;
+              const coverUrl = url;
               
               // Variable heights for a masonry-ish feel
               const isLarge = i % 5 === 0;
