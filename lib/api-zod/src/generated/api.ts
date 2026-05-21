@@ -181,6 +181,33 @@ export const DeleteTripParams = zod.object({
 
 
 /**
+ * @summary Merge source trip into this trip (source is deleted)
+ */
+export const MergeTripsParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const MergeTripsBody = zod.object({
+  "sourceId": zod.number()
+})
+
+export const MergeTripsResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "startDate": zod.string(),
+  "endDate": zod.string(),
+  "coverPhotoId": zod.number().nullish(),
+  "coverPhotoPath": zod.string().nullish(),
+  "locationName": zod.string().nullish(),
+  "centerLat": zod.number().nullish(),
+  "centerLng": zod.number().nullish(),
+  "photoCount": zod.number(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string()
+})
+
+
+/**
  * @summary Get all photos for a trip
  */
 export const GetTripPhotosParams = zod.object({

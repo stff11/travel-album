@@ -211,6 +211,37 @@ paths:
         "204":
           description: Deleted
 
+  /trips/{id}/merge:
+    post:
+      operationId: mergeTrips
+      tags: [trips]
+      summary: Merge source trip into this trip (source is deleted)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MergeTripsBody"
+      responses:
+        "200":
+          description: Updated target trip after merge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trip"
+        "404":
+          description: Trip not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /trips/{id}/photos:
     get:
       operationId: getTripPhotos
@@ -398,6 +429,13 @@ components:
         latestDate:
           type: ["string", "null"]
         totalCountries:
+          type: integer
+
+    MergeTripsBody:
+      type: object
+      required: [sourceId]
+      properties:
+        sourceId:
           type: integer
 
     RegroupResult:

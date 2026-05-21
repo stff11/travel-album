@@ -94,6 +94,10 @@ export interface Stats {
   totalCountries?: number;
 }
 
+export interface MergeTripsBody {
+  sourceId: number;
+}
+
 export interface RegroupResult {
   tripsCreated: number;
   photosGrouped: number;

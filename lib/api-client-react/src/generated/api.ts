@@ -23,6 +23,7 @@ import type {
   ErrorResponse,
   HealthStatus,
   ListPhotosParams,
+  MergeTripsBody,
   Photo,
   PhotoUpload,
   RegroupResult,
@@ -796,6 +797,78 @@ export const useDeleteTrip = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getDeleteTripMutationOptions(options));
+    }
+
+export const getMergeTripsUrl = (id: number,) => {
+
+
+
+
+  return `/api/trips/${id}/merge`
+}
+
+/**
+ * @summary Merge source trip into this trip (source is deleted)
+ */
+export const mergeTrips = async (id: number,
+    mergeTripsBody: MergeTripsBody, options?: RequestInit): Promise<Trip> => {
+
+  return customFetch<Trip>(getMergeTripsUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      mergeTripsBody,)
+  }
+);}
+
+
+
+
+export const getMergeTripsMutationOptions = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof mergeTrips>>, TError,{id: number;data: BodyType<MergeTripsBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof mergeTrips>>, TError,{id: number;data: BodyType<MergeTripsBody>}, TContext> => {
+
+const mutationKey = ['mergeTrips'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof mergeTrips>>, {id: number;data: BodyType<MergeTripsBody>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  mergeTrips(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type MergeTripsMutationResult = NonNullable<Awaited<ReturnType<typeof mergeTrips>>>
+    export type MergeTripsMutationBody = BodyType<MergeTripsBody>
+    export type MergeTripsMutationError = ErrorType<ErrorResponse>
+
+    /**
+ * @summary Merge source trip into this trip (source is deleted)
+ */
+export const useMergeTrips = <TError = ErrorType<ErrorResponse>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof mergeTrips>>, TError,{id: number;data: BodyType<MergeTripsBody>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof mergeTrips>>,
+        TError,
+        {id: number;data: BodyType<MergeTripsBody>},
+        TContext
+      > => {
+      return useMutation(getMergeTripsMutationOptions(options));
     }
 
 export const getGetTripPhotosUrl = (id: number,) => {
