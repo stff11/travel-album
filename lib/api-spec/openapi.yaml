@@ -313,7 +313,7 @@ components:
 
     Photo:
       type: object
-      required: [id, filename, originalName, filePath, mimeType, fileSize, createdAt]
+      required: [id, filename, originalName, mimeType, cloudinaryPublicId, cloudinaryUrl, createdAt]
       properties:
         id:
           type: integer
@@ -321,21 +321,17 @@ components:
           type: string
         originalName:
           type: string
-        filePath:
-          type: string
         mimeType:
           type: string
-        fileSize:
-          type: integer
-        width:
-          type: ["integer", "null"]
-        height:
-          type: ["integer", "null"]
+        fileHash:
+          type: ["string", "null"]
+        cloudinaryPublicId:
+          type: string
+        cloudinaryUrl:
+          type: string
         lat:
           type: ["number", "null"]
         lng:
-          type: ["number", "null"]
-        altitude:
           type: ["number", "null"]
         takenAt:
           type: ["string", "null"]
@@ -367,6 +363,8 @@ components:
         coverPhotoId:
           type: ["integer", "null"]
         coverPhotoPath:
+          type: ["string", "null"]
+        coverCloudinaryUrl:
           type: ["string", "null"]
         locationName:
           type: ["string", "null"]
@@ -410,6 +408,8 @@ components:
         endDate:
           type: string
         coverPhotoPath:
+          type: ["string", "null"]
+        coverCloudinaryUrl:
           type: ["string", "null"]
         locationName:
           type: ["string", "null"]

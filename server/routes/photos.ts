@@ -60,10 +60,7 @@ const upload = multer({
 async function extractExif(filePath: string): Promise<{
   lat: number | null;
   lng: number | null;
-  altitude: number | null;
   takenAt: Date | null;
-  width: number | null;
-  height: number | null;
 }> {
   try {
     const exifr = await import("exifr");
@@ -74,20 +71,16 @@ async function extractExif(filePath: string): Promise<{
       translateValues: true,
     });
 
-    if (!data) return { lat: null, lng: null, altitude: null, takenAt: null, width: null, height: null };
+    if (!data) return { lat: null, lng: null, takenAt: null };
 
     let lat: number | null = null;
     let lng: number | null = null;
-    let altitude: number | null = null;
     let takenAt: Date | null = null;
-    let width: number | null = null;
-    let height: number | null = null;
 
     if (data.latitude != null && data.longitude != null) {
       lat = data.latitude;
       lng = data.longitude;
     }
-    if (data.GPSAltitude != null) altitude = data.GPSAltitude;
 
     const dateVal = data.DateTimeOriginal ?? data.DateTime ?? data.CreateDate;
     if (dateVal instanceof Date) {
@@ -97,36 +90,10 @@ async function extractExif(filePath: string): Promise<{
       if (!isNaN(d.getTime())) takenAt = d;
     }
 
-    if (data.ImageWidth) width = data.ImageWidth;
-    if (data.ImageHeight) height = data.ImageHeight;
-    if (data.ExifImageWidth) width = data.ExifImageWidth;
-    if (data.ExifImageHeight) height = data.ExifImageHeight;
-    if (data.PixelXDimension) width = data.PixelXDimension;
-    if (data.PixelYDimension) height = data.PixelYDimension;
-
-    if (!width || !height) {
-      try {
-        const sharp = (await import("sharp")).default;
-        const meta = await sharp(filePath).metadata();
-        width = meta.width ?? null;
-        height = meta.height ?? null;
-      } catch (_e) {}
-    }
-
-    return { lat, lng, altitude, takenAt, width, height };
+    return { lat, lng, takenAt };
   } catch (err) {
-    logger.warn({ err }, "EXIF extraction failed, falling back to sharp");
-    try {
-      const sharp = (await import("sharp")).default;
-      const meta = await sharp(filePath).metadata();
-      return {
-        lat: null, lng: null, altitude: null, takenAt: null,
-        width: meta.width ?? null,
-        height: meta.height ?? null,
-      };
-    } catch (_e) {
-      return { lat: null, lng: null, altitude: null, takenAt: null, width: null, height: null };
-    }
+    logger.warn({ err }, "EXIF extraction failed");
+    return { lat: null, lng: null, takenAt: null };
   }
 }
 
@@ -211,22 +178,20 @@ router.post(
     // Extract EXIF before uploading (needs local file)
     const exif = await extractExif(actualPath);
 
-    // Upload to Cloudinary
-    let cloudinaryPublicId: string | null = null;
-    let cloudinaryUrl: string | null = null;
-    let cdnWidth = exif.width;
-    let cdnHeight = exif.height;
+    // Upload to Cloudinary (required — no local fallback)
+    let cloudinaryPublicId: string;
+    let cloudinaryUrl: string;
 
     try {
       const cdn = await uploadToCloudinary(actualPath);
       cloudinaryPublicId = cdn.publicId;
       cloudinaryUrl = cdn.secureUrl;
-      if (cdn.width) cdnWidth = cdn.width;
-      if (cdn.height) cdnHeight = cdn.height;
-      // Remove local file after successful Cloudinary upload
       try { fs.unlinkSync(actualPath); } catch (_e) {}
     } catch (err) {
-      logger.warn({ err }, "Cloudinary upload failed, keeping local file as fallback");
+      logger.error({ err }, "Cloudinary upload failed");
+      try { fs.unlinkSync(actualPath); } catch (_e) {}
+      res.status(500).json({ error: "Failed to upload image to storage" });
+      return;
     }
 
     const filename = path.basename(actualPath);
@@ -236,17 +201,12 @@ router.post(
       .values({
         filename,
         originalName: file.originalname,
-        filePath: cloudinaryUrl ?? actualPath,
         mimeType: actualMime,
-        fileSize: fs.existsSync(actualPath) ? fs.statSync(actualPath).size : file.size,
         fileHash,
         cloudinaryPublicId,
         cloudinaryUrl,
-        width: cdnWidth,
-        height: cdnHeight,
         lat: exif.lat,
         lng: exif.lng,
-        altitude: exif.altitude,
         takenAt: exif.takenAt,
         tripId: null,
       })
@@ -270,7 +230,7 @@ router.post(
   }
 );
 
-// Serve local files (fallback for photos uploaded before Cloudinary)
+// Serve local files (fallback for any locally-stored photos)
 router.get("/photos/file/:filename", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.filename) ? req.params.filename[0] : req.params.filename;
   const filename = path.basename(raw);
@@ -334,19 +294,7 @@ router.delete("/photos/:id", async (req, res): Promise<void> => {
     }
   }
 
-  // Delete from Cloudinary if stored there
-  if (photo.cloudinaryPublicId) {
-    await deleteFromCloudinary(photo.cloudinaryPublicId);
-  } else {
-    // Fallback: delete local file
-    try {
-      if (photo.filePath && fs.existsSync(photo.filePath)) {
-        fs.unlinkSync(photo.filePath);
-      }
-    } catch (err) {
-      logger.warn({ err }, "Could not delete local file");
-    }
-  }
+  await deleteFromCloudinary(photo.cloudinaryPublicId);
 
   res.sendStatus(204);
 });

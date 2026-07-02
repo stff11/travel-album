@@ -17,19 +17,15 @@ export interface Photo {
   id: number;
   filename: string;
   originalName: string;
-  filePath: string;
   mimeType: string;
-  fileSize: number;
   /** @nullable */
-  width?: number | null;
-  /** @nullable */
-  height?: number | null;
+  fileHash?: string | null;
+  cloudinaryPublicId: string;
+  cloudinaryUrl: string;
   /** @nullable */
   lat?: number | null;
   /** @nullable */
   lng?: number | null;
-  /** @nullable */
-  altitude?: number | null;
   /** @nullable */
   takenAt?: string | null;
   /** @nullable */
@@ -50,6 +46,8 @@ export interface Trip {
   coverPhotoId?: number | null;
   /** @nullable */
   coverPhotoPath?: string | null;
+  /** @nullable */
+  coverCloudinaryUrl?: string | null;
   /** @nullable */
   locationName?: string | null;
   /** @nullable */
@@ -79,6 +77,8 @@ export interface TripMapPin {
   endDate: string;
   /** @nullable */
   coverPhotoPath?: string | null;
+  /** @nullable */
+  coverCloudinaryUrl?: string | null;
   /** @nullable */
   locationName?: string | null;
 }

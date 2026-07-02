@@ -31,21 +31,28 @@ function serializePhoto(p: DbPhoto) {
   };
 }
 
-function serializeTrip(trip: DbTrip, coverPhotoFilename: string | null) {
+async function getCoverPhoto(coverPhotoId: number | null | undefined): Promise<{
+  filename: string | null;
+  cloudinaryUrl: string | null;
+}> {
+  if (!coverPhotoId) return { filename: null, cloudinaryUrl: null };
+  const [p] = await db.select().from(photosTable).where(eq(photosTable.id, coverPhotoId));
+  return {
+    filename: p?.filename ?? null,
+    cloudinaryUrl: p?.cloudinaryUrl ?? null,
+  };
+}
+
+function serializeTrip(trip: DbTrip, cover: { filename: string | null; cloudinaryUrl: string | null }) {
   return {
     ...trip,
     startDate: trip.startDate.toISOString(),
     endDate: trip.endDate.toISOString(),
     createdAt: trip.createdAt.toISOString(),
     updatedAt: trip.updatedAt.toISOString(),
-    coverPhotoPath: coverPhotoFilename,
+    coverPhotoPath: cover.filename,
+    coverCloudinaryUrl: cover.cloudinaryUrl,
   };
-}
-
-async function getCoverFilename(tripId: number | null | undefined, coverPhotoId: number | null | undefined): Promise<string | null> {
-  if (!coverPhotoId) return null;
-  const [p] = await db.select().from(photosTable).where(eq(photosTable.id, coverPhotoId));
-  return p?.filename ?? null;
 }
 
 router.get("/trips", async (req, res): Promise<void> => {
@@ -53,7 +60,7 @@ router.get("/trips", async (req, res): Promise<void> => {
 
   const result = await Promise.all(
     trips.map(async (trip) => {
-      const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+      const cover = await getCoverPhoto(trip.coverPhotoId);
       return serializeTrip(trip, cover);
     })
   );
@@ -66,7 +73,7 @@ router.get("/trips/map", async (req, res): Promise<void> => {
 
   const result = await Promise.all(
     trips.map(async (trip) => {
-      const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+      const cover = await getCoverPhoto(trip.coverPhotoId);
       return {
         id: trip.id,
         name: trip.name,
@@ -75,7 +82,8 @@ router.get("/trips/map", async (req, res): Promise<void> => {
         photoCount: trip.photoCount,
         startDate: trip.startDate.toISOString(),
         endDate: trip.endDate.toISOString(),
-        coverPhotoPath: cover,
+        coverPhotoPath: cover.filename,
+        coverCloudinaryUrl: cover.cloudinaryUrl,
         locationName: trip.locationName ?? null,
       };
     })
@@ -99,7 +107,7 @@ router.get("/trips/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+  const cover = await getCoverPhoto(trip.coverPhotoId);
   res.json(GetTripResponse.parse(serializeTrip(trip, cover)));
 });
 
@@ -128,7 +136,7 @@ router.patch("/trips/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const cover = await getCoverFilename(trip.id, trip.coverPhotoId);
+  const cover = await getCoverPhoto(trip.coverPhotoId);
   res.json(UpdateTripResponse.parse(serializeTrip(trip, cover)));
 });
 
@@ -191,13 +199,11 @@ router.post("/trips/:id/merge", async (req, res): Promise<void> => {
     return;
   }
 
-  // Move all photos from source → target
   await db
     .update(photosTable)
     .set({ tripId: targetId })
     .where(eq(photosTable.tripId, sourceId));
 
-  // Recalculate stats for target from its photos (now including moved photos)
   const [stats] = await db
     .select({
       count: min(photosTable.id),
@@ -216,11 +222,9 @@ router.post("/trips/:id/merge", async (req, res): Promise<void> => {
 
   const photoCount = photoRows.length;
 
-  // Choose cover: keep target's if it has one, else use source's
   const coverPhotoId =
     target.coverPhotoId !== null ? target.coverPhotoId : source.coverPhotoId;
 
-  // Pick better date range
   const startDate =
     target.startDate <= source.startDate ? target.startDate : source.startDate;
   const endDate =
@@ -242,10 +246,9 @@ router.post("/trips/:id/merge", async (req, res): Promise<void> => {
     .where(eq(tripsTable.id, targetId))
     .returning();
 
-  // Delete source trip
   await db.delete(tripsTable).where(eq(tripsTable.id, sourceId));
 
-  const cover = await getCoverFilename(updated!.id, updated!.coverPhotoId);
+  const cover = await getCoverPhoto(updated!.coverPhotoId);
   res.json(MergeTripsResponse.parse(serializeTrip(updated!, cover)));
 });
 

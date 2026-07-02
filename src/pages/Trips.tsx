@@ -144,10 +144,8 @@ export default function Trips() {
               const url = trip.coverPhotoPath
                 ? thumbUrl(
                     {
-                      cloudinaryUrl:
-                        (trip as any).coverCloudinaryUrl ?? null,
-                      filename:
-                        trip.coverPhotoPath.split("/").pop() ?? "",
+                      cloudinaryUrl: trip.coverCloudinaryUrl ?? null,
+                      filename: trip.coverPhotoPath.split("/").pop() ?? "",
                     },
                     800
                   )

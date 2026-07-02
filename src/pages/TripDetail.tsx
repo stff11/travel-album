@@ -204,7 +204,7 @@ export default function TripDetail() {
   if (!trip) return <div className="p-8 text-muted-foreground">Trip not found.</div>;
 
   const coverUrl = trip.coverPhotoPath
-    ? thumbUrl({ cloudinaryUrl: (trip as any).coverCloudinaryUrl ?? null, filename: trip.coverPhotoPath.split("/").pop() ?? "" }, 1600)
+    ? thumbUrl({ cloudinaryUrl: trip.coverCloudinaryUrl ?? null, filename: trip.coverPhotoPath.split("/").pop() ?? "" }, 1600)
     : null;
 
   const photoList = (photos ?? []) as Photo[];

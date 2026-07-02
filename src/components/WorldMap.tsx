@@ -76,7 +76,7 @@ export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
                   {pin.coverPhotoPath && (
                      <div className="w-full h-24 overflow-hidden rounded-md">
                        <img 
-                         src={thumbUrl({ cloudinaryUrl: (pin as any).coverCloudinaryUrl ?? null, filename: pin.coverPhotoPath?.split('/').pop() ?? '' }, 300)}
+                         src={thumbUrl({ cloudinaryUrl: pin.coverCloudinaryUrl ?? null, filename: pin.coverPhotoPath?.split('/').pop() ?? '' }, 300)}
                          alt={pin.name}
                          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
                        />
