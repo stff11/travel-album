@@ -1,15 +1,16 @@
+import React from 'react';
 import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { Layout } from "@/components/Layout";
-import { UploadQueueProvider } from "@/lib/uploadQueue";
-import { UploadStatus } from "@/components/UploadStatus";
-import NotFound from "@/pages/not-found";
-import Dashboard from "@/pages/Dashboard";
-import Trips from "@/pages/Trips";
-import TripDetail from "@/pages/TripDetail";
-import Upload from "@/pages/Upload";
+import { Toaster } from "./components/ui/toaster";
+import { TooltipProvider } from "./components/ui/tooltip";
+import { Layout } from "./components/Layout";
+import { UploadQueueProvider } from "./lib/uploadQueue";
+import { UploadStatus } from "./components/UploadStatus";
+import NotFound from "./pages/not-found";
+import Dashboard from "./pages/Dashboard";
+import Trips from "./pages/Trips";
+import TripDetail from "./pages/TripDetail";
+import Upload from "./pages/Upload";
 
 const queryClient = new QueryClient({
   defaultOptions: {

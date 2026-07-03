@@ -1,10 +1,15 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["src/**/*"],
+  "include": [
+    "src",
+    "env.d.ts" 
+  ],
   "exclude": ["node_modules", "build", "dist"],
   "compilerOptions": {
     "noEmit": true,
-    "jsx": "preserve",
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
     "lib": ["esnext", "dom", "dom.iterable"],
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,

@@ -1,3 +1,4 @@
+import React from 'react';
 import {
   useListTrips,
   getListTripsQueryKey,
@@ -8,9 +9,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { format } from "date-fns";
 import { MapPin, GitMerge, X, CheckCircle2, ArrowRight } from "lucide-react";
-import { thumbUrl } from "@/lib/photoUrl";
+import { thumbUrl } from "../lib/photoUrl";
 import { useState } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "../lib/utils";
 
 export default function Trips() {
   const { data: trips, isLoading } = useListTrips({

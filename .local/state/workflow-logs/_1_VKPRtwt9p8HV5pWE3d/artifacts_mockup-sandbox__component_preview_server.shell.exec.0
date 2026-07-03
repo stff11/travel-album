@@ -1,0 +1,21 @@
+
+> @workspace/mockup-sandbox@2.0.0 dev /home/runner/workspace/artifacts/mockup-sandbox
+> vite dev
+
+[31mfailed to load config from /home/runner/workspace/artifacts/mockup-sandbox/vite.config.ts[39m
+[31merror when starting dev server:
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'fast-glob' imported from /home/runner/workspace/node_modules/.vite-temp/vite.config.ts.timestamp-1782655433931-9161e3a11245e8.mjs
+Did you mean to import "fast-glob/out/index.js"?
+    at Object.getPackageJSONURL (node:internal/modules/package_json_reader:316:9)
+    at packageResolve (node:internal/modules/esm/resolve:768:81)
+    at moduleResolve (node:internal/modules/esm/resolve:858:18)
+    at defaultResolve (node:internal/modules/esm/resolve:990:11)
+    at #cachedDefaultResolve (node:internal/modules/esm/loader:718:20)
+    at #resolveAndMaybeBlockOnLoaderThread (node:internal/modules/esm/loader:735:38)
+    at ModuleLoader.resolveSync (node:internal/modules/esm/loader:764:52)
+    at #resolve (node:internal/modules/esm/loader:700:17)
+    at ModuleLoader.getOrCreateModuleJob (node:internal/modules/esm/loader:620:35)
+    at ModuleJob.syncLink (node:internal/modules/esm/module_job:143:33)[39m
+[41m[30m ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL [39m[49m [31m@workspace/mockup-sandbox@2.0.0 dev: `vite dev`[39m
+[31mExit status 1[39m
+[43m[30m WARN [39m[49m  Local package.json exists, but node_modules missing, did you mean to install?

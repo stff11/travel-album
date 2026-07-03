@@ -14,14 +14,14 @@ import { useState, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Trash2, Calendar, MapPin as MapPinIcon, Check, X, Edit2, ChevronLeft, ChevronRight } from "lucide-react";
 import { Link } from "wouter";
-import { Input } from "@/components/ui/input";
+import { Input } from "../components/ui/input";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import { photoUrl, thumbUrl } from "@/lib/photoUrl";
+} from "../components/ui/context-menu";
+import { photoUrl, thumbUrl } from "../lib/photoUrl";
 
 type Photo = {
   id: number;
