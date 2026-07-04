@@ -4,13 +4,6 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "pnpm": {
-    "overrides": {
-      "esbuild": "0.28.1",
-      "@esbuild/darwin-arm64": "0.28.1",
-      "@esbuild/linux-x64": "0.28.1"
-    }
-  },
   "scripts": {
     "dev:server": "PORT=8080 NODE_ENV=development pnpm run build:server && PORT=8080 NODE_ENV=development pnpm run start:server",
     "build:server": "node ./build.mjs",
