@@ -38,12 +38,6 @@ export default function Dashboard() {
               <span>{stats?.totalTrips || 0} Journeys</span>
               <span>&middot;</span>
               <span>{stats?.totalPhotos || 0} Captures</span>
-              {stats?.totalCountries && (
-                <>
-                  <span>&middot;</span>
-                  <span>{stats.totalCountries} Countries</span>
-                </>
-              )}
             </div>
           </div>
 

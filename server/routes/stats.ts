@@ -28,7 +28,6 @@ router.get("/stats", async (req, res): Promise<void> => {
       photosWithLocation: photoStats.photosWithLocation,
       earliestDate: photoStats.earliestDate?.toISOString() ?? null,
       latestDate: photoStats.latestDate?.toISOString() ?? null,
-      totalCountries: 0,
     })
   );
 });

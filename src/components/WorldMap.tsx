@@ -83,8 +83,8 @@ export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
                      </div>
                   )}
                   <div>
-                    <h3 className="font-serif text-lg font-medium text-foreground">{pin.name}</h3>
-                    <p className="text-xs text-muted-foreground">{new Date(pin.startDate).getFullYear()} &middot; {pin.photoCount} photos</p>
+                    <h3 className="font-serif text-lg font-medium text-white">{pin.name}</h3>
+                    <p className="text-xs text-white">{new Date(pin.startDate).getFullYear()} &middot; {pin.photoCount} photos</p>
                   </div>
                 </div>
               </Link>
