@@ -1,10 +1,10 @@
-import React, { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { TripMapPin } from "@workspace/api-client-react";
 import { Link } from "wouter";
-import { thumbUrl } from "../lib/photoUrl";
+import { thumbUrl } from "@/lib/photoUrl";
 
 interface WorldMapProps {
   pins: TripMapPin[];

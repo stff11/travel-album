@@ -1,7 +1,6 @@
-import React from 'react';
 import { Link, useLocation } from "wouter";
 import { Compass, Image as ImageIcon, UploadCloud, Map, Activity } from "lucide-react";
-import { cn } from "../lib/utils";
+import { cn } from "@/lib/utils";
 import { useHealthCheck, getHealthCheckQueryKey } from "@workspace/api-client-react";
 
 interface LayoutProps {

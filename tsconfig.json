@@ -6,11 +6,5 @@
     { "path": "./lib/db" },
     { "path": "./lib/api-client-react" },
     { "path": "./lib/api-zod" }
-  ],
-  "compilerOptions": {
-    "jsx": "react-jsx",
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
-  },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "env.d.ts"]
+  ]
 }

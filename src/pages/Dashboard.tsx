@@ -1,6 +1,5 @@
-import React from 'react';
 import { useGetStats, getGetStatsQueryKey, useGetTripsMap, getGetTripsMapQueryKey, useListTrips, getListTripsQueryKey } from "@workspace/api-client-react";
-import { WorldMap } from "../components/WorldMap";
+import { WorldMap } from "@/components/WorldMap";
 import { motion } from "framer-motion";
 import { format } from "date-fns";
 import { Link } from "wouter";
@@ -9,13 +8,10 @@ import { MapPin } from "lucide-react";
 export default function Dashboard() {
   const { data: stats, isLoading: statsLoading } = useGetStats({ query: { queryKey: getGetStatsQueryKey() }});
   const { data: mapPins, isLoading: mapLoading } = useGetTripsMap({ query: { queryKey: getGetTripsMapQueryKey() }});
-  console.log("mapPins shape:", mapPins);
   const { data: trips, isLoading: tripsLoading } = useListTrips({ query: { queryKey: getListTripsQueryKey() }});
 
   const isLoading = statsLoading || mapLoading || tripsLoading;
 
-  // Inside Dashboard.tsx, before the return statement
-  console.log("Trips data:", trips);
   return (
     <div className="relative w-full h-full bg-background">
       {/* Background Map */}

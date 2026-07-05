@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, Loader2, AlertCircle, X } from "lucide-react";
-import { useUploadQueue } from "../lib/uploadQueue";
+import { useUploadQueue } from "@/lib/uploadQueue";
 
 export function UploadStatus() {
   const { total, done, failed, active, clearDone } = useUploadQueue();
