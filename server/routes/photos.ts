@@ -29,7 +29,7 @@ function serializePhoto(p: DbPhoto) {
   };
 }
 
-const UPLOAD_DIR = process.env.NETLIFY === "true"
+const UPLOAD_DIR = process.env.AWS_LAMBDA_FUNCTION_NAME
   ? "/tmp/wanderlens-uploads"
   : path.join(process.cwd(), "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) {
