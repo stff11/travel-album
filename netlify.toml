@@ -9,6 +9,9 @@
   PORT = "3000"
   NODE_ENV = "production"
 
+[context.production.environment]
+  NODE_ENV = "production"
+
 [functions]
   node_bundler = "esbuild"
   external_node_modules = ["sharp", "pg-native", "heic-convert"]

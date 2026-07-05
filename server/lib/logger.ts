@@ -1,6 +1,8 @@
 import pino from "pino";
 
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction =
+  process.env.NODE_ENV === "production" ||
+  process.env.NETLIFY === "true";
 
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? "info",
@@ -18,3 +20,4 @@ export const logger = pino({
         },
       }),
 });
+
