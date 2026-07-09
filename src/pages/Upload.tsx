@@ -23,6 +23,7 @@ export default function Upload() {
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
+    alert('Original File Size:", e.target.files[0].size / 1024 / 1024, "MB');
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
