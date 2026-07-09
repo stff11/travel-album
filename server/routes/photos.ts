@@ -144,7 +144,7 @@ router.post(
         const outputBuffer = await heicConvert.default({
           buffer: inputBuffer,
           format: "JPEG",
-          quality: 0.92,
+          quality: 1, // 0.92, compresses the images (e.g. from 3.5MB to 1.3MB)
         });
         const jpegPath = file.path.replace(/\.(heic|heif)$/i, ".jpg");
         const finalPath = jpegPath === file.path ? `${file.path}.jpg` : jpegPath;
