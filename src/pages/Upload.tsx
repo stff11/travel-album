@@ -26,7 +26,7 @@ export default function Upload() {
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.target.files[0];
+      const file = e.dataTransfer.files[0];
       alert(`File Name: ${file.name} | Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
       const validFiles = Array.from(e.dataTransfer.files).filter(
         (f) => f.type.startsWith("image/") || /\.heic$/i.test(f.name)
