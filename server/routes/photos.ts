@@ -305,6 +305,8 @@
 
 
 
+
+
 import { Router, type IRouter } from "express";
 import multer from "multer";
 import crypto from "crypto";
@@ -321,26 +323,50 @@ import {
 import { logger } from "../lib/logger";
 import { assignPhotoToTrip, regroupAllPhotos } from "../lib/tripGrouping";
 import { uploadToCloudinary, deleteFromCloudinary } from "../lib/cloudinary";
+import exifr from "exifr";
 
 const router: IRouter = Router();
 
-// Configure Multer to keep files exactly as they are in Memory
-const storage = multer.memoryStorage();
+type DbPhoto = typeof photosTable.$inferSelect;
+
+function serializePhoto(p: DbPhoto) {
+  return {
+    ...p,
+    takenAt: p.takenAt?.toISOString() ?? null,
+    createdAt: p.createdAt.toISOString(),
+  };
+}
+
+// MemoryStorage avoids disk I/O and potential /tmp issues
 const upload = multer({
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Unsupported file type: ${file.mimetype}`));
+    }
+  },
 });
 
-// Helper: Extract metadata without altering image bytes
-async function extractExif(buffer: Buffer) {
-  try {
-    const exifr = await import("exifr");
-    return await exifr.default.parse(buffer, { gps: true, tiff: true, exif: true });
-  } catch (err) {
-    logger.warn({ err }, "EXIF extraction failed");
-    return null;
+router.get("/photos", async (req, res): Promise<void> => {
+  const params = ListPhotosQueryParams.safeParse(req.query);
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
   }
-}
+  const photos = params.data.tripId
+    ? await db.select().from(photosTable).where(eq(photosTable.tripId, params.data.tripId))
+    : await db.select().from(photosTable);
+  res.json(ListPhotosResponse.parse(photos.map(serializePhoto)));
+});
+
+router.post("/photos/regroup", async (req, res): Promise<void> => {
+  const result = await regroupAllPhotos();
+  res.json(RegroupPhotosResponse.parse(result));
+});
 
 router.post(
   "/photos/upload",
@@ -353,45 +379,88 @@ router.post(
 
     const { buffer, originalname, mimetype } = req.file;
 
-    // 1. Generate hash from the RAW buffer to ensure integrity
+    // 1. Deduplication (Hash raw buffer)
     const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
-
-    // 2. Check for duplicate
     const [existing] = await db.select().from(photosTable).where(eq(photosTable.fileHash, fileHash));
     if (existing) {
-      res.status(201).json(GetPhotoResponse.parse(existing));
+      res.status(201).json(GetPhotoResponse.parse(serializePhoto(existing)));
       return;
     }
 
-    // 3. Extract Metadata
-    const exif = await extractExif(buffer);
-    
-    // 4. Upload RAW buffer to Cloudinary (No quality optimization here!)
-    // NOTE: You must update your lib/cloudinary.ts uploadToCloudinary to handle a Buffer
-    const cdn = await uploadToCloudinary(buffer); 
+    // 2. Metadata Extraction (from memory buffer)
+    let lat = null, lng = null, takenAt = new Date();
+    try {
+      const data = await exifr.parse(buffer, { gps: true, tiff: true, exif: true });
+      if (data?.latitude && data?.longitude) { lat = data.latitude; lng = data.longitude; }
+      if (data?.DateTimeOriginal) takenAt = data.DateTimeOriginal;
+    } catch (err) { logger.warn({ err }, "EXIF extraction failed"); }
 
-    // 5. Database Save
-    const [photo] = await db.insert(photosTable).values({
-      filename: originalname,
-      originalName: originalname,
-      mimeType: mimetype,
-      fileHash,
-      cloudinaryPublicId: cdn.publicId,
-      cloudinaryUrl: cdn.secureUrl,
-      lat: exif?.latitude ?? null,
-      lng: exif?.longitude ?? null,
-      takenAt: exif?.DateTimeOriginal ?? new Date(),
-      tripId: null,
-    }).returning();
+    // 3. Upload directly to Cloudinary (buffer stream)
+    try {
+      const cdn = await uploadToCloudinary(buffer);
 
-    // 6. Logic Grouping
-    const tripId = await assignPhotoToTrip({ ...photo, lat: photo.lat, lng: photo.lng, takenAt: photo.takenAt });
-    if (tripId != null) {
-      await db.update(photosTable).set({ tripId }).where(eq(photosTable.id, photo.id));
+      // 4. Save to DB
+      const [photo] = await db.insert(photosTable).values({
+        filename: originalname,
+        originalName: originalname,
+        mimeType: mimetype,
+        fileHash,
+        cloudinaryPublicId: cdn.publicId,
+        cloudinaryUrl: cdn.secureUrl,
+        lat, lng, takenAt,
+        tripId: null,
+      }).returning();
+
+      // 5. Grouping Logic
+      const tripId = await assignPhotoToTrip({ ...photo, lat, lng, takenAt });
+      if (tripId != null) {
+        await db.update(photosTable).set({ tripId }).where(eq(photosTable.id, photo.id));
+        photo.tripId = tripId;
+      }
+
+      res.status(201).json(GetPhotoResponse.parse(serializePhoto(photo)));
+    } catch (err) {
+      logger.error({ err }, "Cloudinary upload failed");
+      res.status(500).json({ error: "Failed to upload image" });
     }
-
-    res.status(201).json(photo);
   }
 );
+
+router.get("/photos/:id", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetPhotoParams.safeParse({ id: parseInt(raw, 10) });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [photo] = await db.select().from(photosTable).where(eq(photosTable.id, params.data.id));
+  if (!photo) { res.status(404).json({ error: "Photo not found" }); return; }
+  res.json(GetPhotoResponse.parse(serializePhoto(photo)));
+});
+
+router.delete("/photos/:id", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = DeletePhotoParams.safeParse({ id: parseInt(raw, 10) });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [photo] = await db.delete(photosTable).where(eq(photosTable.id, params.data.id)).returning();
+  if (!photo) { res.status(404).json({ error: "Photo not found" }); return; }
+
+  // Cleanup Trip association
+  if (photo.tripId) {
+    const remaining = await db.select().from(photosTable).where(eq(photosTable.tripId, photo.tripId));
+    if (remaining.length === 0) {
+      await db.delete(tripsTable).where(eq(tripsTable.id, photo.tripId));
+    } else {
+      await db.update(tripsTable).set({ photoCount: remaining.length }).where(eq(tripsTable.id, photo.tripId));
+    }
+  }
+
+  try { await deleteFromCloudinary(photo.cloudinaryPublicId); } catch (e) { logger.warn("Cloudinary delete failed"); }
+  res.sendStatus(204);
+});
 
 export default router;
