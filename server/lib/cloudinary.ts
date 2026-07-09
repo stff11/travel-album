@@ -20,8 +20,10 @@ export async function uploadToCloudinary(filePath: string, folder = "wanderlens"
     use_filename: false,
     unique_filename: true,
     overwrite: false,
-    quality: "auto",
-    fetch_format: "auto",
+    // REMOVE quality and fetch_format from the UPLOAD step
+    // This ensures Cloudinary stores the file exactly as it is sent.
+    // quality: "auto",
+    // fetch_format: "auto",
   });
 
   logger.info({ publicId: result.public_id, url: result.secure_url }, "Uploaded to Cloudinary");
