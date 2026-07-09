@@ -35,7 +35,7 @@ export default function Upload() {
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      console.log("Original File Size:", e.target.files[0].size / 1024 / 1024, "MB");
+      alert('Original File Size:", e.target.files[0].size / 1024 / 1024, "MB');
       const validFiles = Array.from(e.target.files).filter(
         (f) => f.type.startsWith("image/") || /\.heic$/i.test(f.name)
       );
