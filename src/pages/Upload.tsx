@@ -23,10 +23,11 @@ export default function Upload() {
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
-    alert('Original File Size:", e.target.files[0].size / 1024 / 1024, "MB');
     e.preventDefault();
     setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.target.files[0];
+      alert(`File Name: ${file.name} | Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
       const validFiles = Array.from(e.dataTransfer.files).filter(
         (f) => f.type.startsWith("image/") || /\.heic$/i.test(f.name)
       );
@@ -36,7 +37,8 @@ export default function Upload() {
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      alert('Original File Size:", e.target.files[0].size / 1024 / 1024, "MB');
+      const file = e.target.files[0];
+      alert(`File Name: ${file.name} | Size: ${(file.size / 1024 / 1024).toFixed(2)} MB`);
       const validFiles = Array.from(e.target.files).filter(
         (f) => f.type.startsWith("image/") || /\.heic$/i.test(f.name)
       );
