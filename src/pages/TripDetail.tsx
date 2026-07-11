@@ -21,7 +21,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { photoUrl, thumbUrl } from "@/lib/photoUrl";
+import { photoUrl, thumbUrl, placeholderUrl } from "@/lib/photoUrl";
 
 type Photo = {
   id: number;
@@ -55,7 +55,12 @@ function Lightbox({
   onDelete: (id: number) => void;
 }) {
   const [index, setIndex] = useState(initialIndex);
+  const [loadedIds, setLoadedIds] = useState<Set<number>>(() => new Set());
   const photo = photos[index];
+
+  const markLoaded = useCallback((photoId: number) => {
+    setLoadedIds((prev) => (prev.has(photoId) ? prev : new Set(prev).add(photoId)));
+  }, []);
 
   const prev = useCallback(() => setIndex((i) => Math.max(0, i - 1)), []);
   const next = useCallback(() => setIndex((i) => Math.min(photos.length - 1, i + 1)), [photos.length]);
@@ -69,6 +74,23 @@ function Lightbox({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, prev, next]);
+
+  // Preload the full-resolution neighbor images so stepping through the
+  // lightbox with the arrow keys / buttons doesn't have to wait on a fresh
+  // network request each time.
+  useEffect(() => {
+    const neighbors = [index - 1, index + 1].filter((i) => i >= 0 && i < photos.length);
+    for (const i of neighbors) {
+      const neighbor = photos[i];
+      if (!neighbor || loadedIds.has(neighbor.id)) continue;
+      const img = new Image();
+      img.onload = () => markLoaded(neighbor.id);
+      img.src = photoUrl(neighbor);
+    }
+    // Only re-run when the current index or photo list changes; loadedIds is
+    // read for its guard, not to retrigger preloading of already-loaded photos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, photos]);
 
   if (!photo) return null;
 
@@ -102,18 +124,35 @@ function Lightbox({
 
       <ContextMenu>
         <ContextMenuTrigger asChild>
-          <motion.img
-            key={photo.id}
-            initial={{ opacity: 0, scale: 0.97 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.2 }}
-            src={photoUrl(photo)}
-            alt={photo.originalName}
-            className="max-w-[90vw] max-h-[90vh] object-contain select-none rounded"
+          <div
+            className="relative flex items-center justify-center max-w-[90vw] max-h-[90vh]"
+            style={photo.width && photo.height ? { aspectRatio: `${photo.width} / ${photo.height}` } : undefined}
             onClick={(e) => e.stopPropagation()}
-            onContextMenu={(e) => e.stopPropagation()}
-            draggable={false}
-          />
+          >
+            {/* Blurred placeholder — same aspect ratio, loads almost instantly,
+                and fades out once the full-resolution image is ready. */}
+            <img
+              src={placeholderUrl(photo, 48)}
+              alt=""
+              aria-hidden="true"
+              className={`absolute inset-0 w-full h-full object-contain blur-xl scale-105 transition-opacity duration-300 ${
+                loadedIds.has(photo.id) ? "opacity-0" : "opacity-100"
+              }`}
+              draggable={false}
+            />
+            <motion.img
+              key={photo.id}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.25 }}
+              src={photoUrl(photo)}
+              alt={photo.originalName}
+              className="relative max-w-[90vw] max-h-[90vh] object-contain select-none rounded"
+              onContextMenu={(e) => e.stopPropagation()}
+              onLoad={() => markLoaded(photo.id)}
+              draggable={false}
+            />
+          </div>
         </ContextMenuTrigger>
         <ContextMenuContent className="bg-card/95 backdrop-blur border-border/40 min-w-[160px]">
           <ContextMenuItem
@@ -197,6 +236,46 @@ export default function TripDetail() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isSelectMode, exitSelectMode]);
 
+  // Thumbnails that have finished loading, so we can fade each one in once
+  // instead of having it pop straight from the grey placeholder to loaded.
+  const [loadedThumbIds, setLoadedThumbIds] = useState<Set<number>>(() => new Set());
+  const markThumbLoaded = useCallback((photoId: number) => {
+    setLoadedThumbIds((prev) => (prev.has(photoId) ? prev : new Set(prev).add(photoId)));
+  }, []);
+
+  // Warm the browser cache with full-resolution versions of the first few
+  // photos while the album is open, during idle time and one at a time, so
+  // that opening the lightbox on any of them feels instant. Capped to a
+  // handful of photos so this never competes with the thumbnail grid for
+  // bandwidth or preloads an entire (possibly huge) album.
+  useEffect(() => {
+    const candidates = ((photos ?? []) as Photo[]).slice(0, 8);
+    if (candidates.length === 0) return;
+
+    let cancelled = false;
+    let idleHandle: number | undefined;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const preloadNext = (i: number) => {
+      if (cancelled || i >= candidates.length) return;
+      const img = new Image();
+      img.onload = img.onerror = () => preloadNext(i + 1);
+      img.src = photoUrl(candidates[i]);
+    };
+
+    if ("requestIdleCallback" in window) {
+      idleHandle = window.requestIdleCallback(() => preloadNext(0));
+    } else {
+      timeoutHandle = setTimeout(() => preloadNext(0), 1000);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleHandle !== undefined) window.cancelIdleCallback(idleHandle);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    };
+  }, [photos]);
+
   const startEdit = () => {
     if (trip) { setEditName(trip.name); setIsEditing(true); }
   };
@@ -230,11 +309,13 @@ export default function TripDetail() {
 
     setIsDeleting(true);
     try {
-      await Promise.all(
-        Array.from(selectedIds).map((photoId) =>
-          deletePhoto.mutateAsync({ id: photoId })
-        )
-      );
+      // Deleted sequentially, not in parallel: each delete recomputes the trip's
+      // cover photo and center on the server from whatever photos are still
+      // present, so requests must be committed one at a time to avoid a race
+      // where two in-flight deletes read the trip before either one's update lands.
+      for (const photoId of Array.from(selectedIds)) {
+        await deletePhoto.mutateAsync({ id: photoId });
+      }
       queryClient.invalidateQueries({ queryKey: getGetTripPhotosQueryKey(id) });
       queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(id) });
       exitSelectMode();
@@ -393,8 +474,10 @@ export default function TripDetail() {
                     <img
                       src={thumbUrl(photo, 400)}
                       alt={photo.originalName}
-                      className={`w-full h-full object-cover transition-all duration-200 ${isSelected ? "scale-95 brightness-75" : ""}`}
-                      loading="lazy"
+                      className={`w-full h-full object-cover transition-all duration-300 ${isSelected ? "scale-95 brightness-75" : ""} ${loadedThumbIds.has(photo.id) ? "opacity-100" : "opacity-0"}`}
+                      loading={i < 12 ? "eager" : "lazy"}
+                      fetchPriority={i < 6 ? "high" : "auto"}
+                      onLoad={() => markThumbLoaded(photo.id)}
                       draggable={false}
                     />
                     <div className={`absolute inset-0 transition-colors duration-200 ${isSelected ? "bg-primary/20" : "bg-transparent hover:bg-black/20"}`} />
@@ -422,8 +505,10 @@ export default function TripDetail() {
                       <img
                         src={thumbUrl(photo, 400)}
                         alt={photo.originalName}
-                        className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                        loading="lazy"
+                        className={`w-full h-full object-cover transition-all duration-300 group-hover:scale-105 ${loadedThumbIds.has(photo.id) ? "opacity-100" : "opacity-0"}`}
+                        loading={i < 12 ? "eager" : "lazy"}
+                        fetchPriority={i < 6 ? "high" : "auto"}
+                        onLoad={() => markThumbLoaded(photo.id)}
                       />
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-300" />
                     </motion.div>

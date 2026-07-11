@@ -54,6 +54,20 @@ export function thumbUrl(photo: PhotoLike, size = 400): string {
 }
 
 /**
+ * Tiny, heavily-compressed preview — same aspect ratio as the original,
+ * meant to be shown (CSS-blurred) as a placeholder while the full image loads.
+ */
+export function placeholderUrl(photo: PhotoLike, width = 48): string {
+  if (photo.cloudinaryUrl) {
+    return photo.cloudinaryUrl.replace(
+      /\/upload\//,
+      `/upload/f_auto,q_auto:low,w_${width},c_limit/`
+    );
+  }
+  return `/api/photos/file/${photo.filename}`;
+}
+
+/**
  * Cover/hero URL — wide crop optimised for banners.
  */
 export function coverUrl(photo: PhotoLike | null | undefined, fallbackFilename?: string): string {
