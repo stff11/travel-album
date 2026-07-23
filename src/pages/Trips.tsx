@@ -70,7 +70,7 @@ export default function Trips() {
               animate={{ opacity: 1, y: 0 }}
               className="text-4xl md:text-5xl font-serif tracking-tight"
             >
-              Journeys
+              Trips
             </motion.h1>
             <motion.p
               initial={{ opacity: 0 }}
@@ -135,7 +135,7 @@ export default function Trips() {
               href="/upload"
               className="bg-primary text-primary-foreground px-6 py-3 rounded-md text-sm font-medium tracking-wide hover:opacity-90 transition-opacity"
             >
-              Start the Archive
+              Start Uploading
             </Link>
           </div>
         ) : (
@@ -245,7 +245,7 @@ export default function Trips() {
                         "translate-y-2 group-hover:translate-y-0"
                     )}
                   >
-                    <span className="text-xs tracking-widest uppercase text-primary font-medium">
+                    <span className="tracking-widest uppercase text-primary font-medium">
                       {format(new Date(trip.startDate), "MMM yyyy")}
                     </span>
                     <h2 className="text-2xl font-serif text-white">

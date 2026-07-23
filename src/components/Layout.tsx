@@ -13,8 +13,8 @@ export function Layout({ children }: LayoutProps) {
 
   const navItems = [
     { href: "/", icon: Map, label: "Map" },
-    { href: "/trips", icon: Compass, label: "Journeys" },
-    { href: "/upload", icon: UploadCloud, label: "Archive" },
+    { href: "/trips", icon: Compass, label: "Trips" },
+    { href: "/upload", icon: UploadCloud, label: "Upload" },
   ];
 
   return (
