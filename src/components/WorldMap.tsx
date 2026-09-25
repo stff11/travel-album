@@ -37,7 +37,7 @@ function MapUpdater({ pins }: { pins: TripMapPin[] }) {
 
 export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
   const mapRef = useRef<L.Map>(null);
-  const CARTO_API_KEY = process.env.VITE_CARTO_API_KEY;
+  const CARTO_API_KEY = import.meta.env.VITE_CARTO_API_KEY;
 
   // Fix Leaflet's default icon paths issue (though we use custom icons anyway)
   useEffect(() => {
