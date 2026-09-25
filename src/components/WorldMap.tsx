@@ -37,6 +37,7 @@ function MapUpdater({ pins }: { pins: TripMapPin[] }) {
 
 export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
   const mapRef = useRef<L.Map>(null);
+  const CARTO_API_KEY = process.env.NEXT_PUBLIC_CARTO_API_KEY;
 
   // Fix Leaflet's default icon paths issue (though we use custom icons anyway)
   useEffect(() => {
@@ -59,10 +60,10 @@ export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
         ref={mapRef}
         zoomControl={false}
       >
-        {/* CartoDB Dark Matter Base Map */}
+        {/* Updated CARTO Dark Matter Base Map with API Key */}
         <TileLayer
-          attribution='&copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://cartodb-basemaps-{s}.global.ssl.fastly.net/dark_all/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url="https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=CARTO_API_KEY"
         />
         {pins.map((pin) => (
           <Marker 
