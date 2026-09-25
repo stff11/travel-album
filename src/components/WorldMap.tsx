@@ -61,9 +61,14 @@ export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
         zoomControl={false}
       >
         {/* Updated CARTO Dark Matter Base Map with evaluated API Key */}
-        <TileLayer
+        {/* <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
           url={`https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=${CARTO_API_KEY}`}
+        /> */}
+        {/* New Dark Matter Base Map without API Key */}
+        <TileLayer
+          attribution='&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="http://openstreetmap.org">OpenStreetMap</a> contributors'
+          url="https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png"
         />
         {pins.map((pin) => (
           <Marker 
