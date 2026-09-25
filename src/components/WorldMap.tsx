@@ -63,7 +63,7 @@ export function WorldMap({ pins, className = "w-full h-full" }: WorldMapProps) {
         {/* Updated CARTO Dark Matter Base Map with API Key */}
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=CARTO_API_KEY"
+          url="https://basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}.png?key=${CARTO_API_KEY}"
         />
         {pins.map((pin) => (
           <Marker 
