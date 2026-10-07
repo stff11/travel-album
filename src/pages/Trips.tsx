@@ -7,9 +7,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { Link, useLocation } from "wouter";
 import { format } from "date-fns";
-import { MapPin, GitMerge, X, CheckCircle2, ArrowRight } from "lucide-react";
+import {
+  MapPin,
+  GitMerge,
+  X,
+  CheckCircle2,
+  ArrowRight,
+  Search,
+} from "lucide-react";
 import { thumbUrl } from "@/lib/photoUrl";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export default function Trips() {
@@ -30,6 +37,35 @@ export default function Trips() {
       },
     },
   });
+
+  const [query, setQuery] = useState("");
+
+  // Case- and accent-insensitive: "zurich" matches "Zürich"
+  const normalize = (v: string) =>
+    v
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
+  const filteredTrips = useMemo(() => {
+    const terms = normalize(query).split(/\s+/).filter(Boolean);
+    if (!trips || terms.length === 0) return trips ?? [];
+    return trips.filter((t) => {
+      const date = new Date(t.startDate);
+      const haystack = normalize(
+        [
+          t.name,
+          t.locationName ?? "",
+          format(date, "MMM yyyy"),
+          format(date, "MMMM yyyy"),
+        ].join(" ")
+      );
+      // every word must match somewhere (e.g. "paris 2023")
+      return terms.every((term) => haystack.includes(term));
+    });
+  }, [trips, query]);
+
+  const isSearching = query.trim().length > 0;
 
   const canMerge = (trips?.length ?? 0) >= 2;
 
@@ -112,6 +148,41 @@ export default function Trips() {
           )}
         </header>
 
+        {!isLoading && (trips?.length ?? 0) > 0 && (
+          <div className="flex items-center gap-4">
+            <div className="relative w-full max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setQuery("");
+                }}
+                placeholder="Search by name, place or date…"
+                aria-label="Search trips"
+                className="w-full pl-9 pr-9 py-2 rounded-lg border border-border bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none focus:border-foreground/40 transition-colors"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {isSearching && (
+              <span className="text-sm text-muted-foreground whitespace-nowrap">
+                {filteredTrips.length} of {trips?.length}{" "}
+                {trips?.length === 1 ? "trip" : "trips"}
+              </span>
+            )}
+          </div>
+        )}
+
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {[1, 2, 3, 4, 5, 6].map((i) => (
@@ -138,9 +209,26 @@ export default function Trips() {
               Start Uploading
             </Link>
           </div>
+        ) : filteredTrips.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center p-24 border border-dashed border-border/50 rounded-2xl bg-secondary/10">
+            <Search className="text-muted-foreground w-12 h-12 mb-6 opacity-50" />
+            <h3 className="font-serif text-2xl text-foreground mb-2">
+              No matching trips
+            </h3>
+            <p className="text-muted-foreground mb-6 max-w-md">
+              Nothing matches “{query.trim()}”. Try a different name, place or
+              year.
+            </p>
+            <button
+              onClick={() => setQuery("")}
+              className="px-4 py-2 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 transition-colors text-sm"
+            >
+              Clear search
+            </button>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 auto-rows-[300px]">
-            {trips?.map((trip, i) => {
+            {filteredTrips.map((trip, i) => {
               const url = trip.coverPhotoPath
                 ? thumbUrl(
                     {
