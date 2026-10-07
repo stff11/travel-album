@@ -409,9 +409,6 @@ export default function TripDetail() {
                 <span>{trip.locationName}</span>
               </div>
             )}
-            <div className="px-3 py-1 bg-white/10 backdrop-blur-sm rounded-full border border-white/10">
-              {trip.photoCount} Captures
-            </div>
           </div>
         </div>
       </div>
