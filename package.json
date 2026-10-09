@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"${npm_config_user_agent:-pnpm/}\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
     "dev:server": "PORT=8080 NODE_ENV=development pnpm run build:server && PORT=8080 NODE_ENV=development pnpm run start:server",
     "build:server": "node ./build.mjs",
     "start:server": "node --enable-source-maps ./dist/index.mjs",
