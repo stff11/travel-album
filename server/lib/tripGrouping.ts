@@ -1,6 +1,7 @@
 import { db, photosTable, tripsTable } from "@workspace/db";
-import { isNull, eq, asc } from "drizzle-orm";
+import { isNull, eq, asc, inArray, sql } from "drizzle-orm";
 import { logger } from "./logger";
+import { recomputeTrip, type DbOrTx } from "./tripStats";
 
 const MAX_DISTANCE_KM = 100;
 const MAX_DAYS_GAP = 5;
@@ -26,6 +27,7 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
     const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`;
     const res = await fetch(url, {
       headers: { "User-Agent": "WanderLens/1.0 travel-memory-app" },
+      signal: AbortSignal.timeout(4000),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -116,97 +118,107 @@ function groupPhotosIntoTrips(photos: PhotoRow[]): TripGroup[] {
   return groups;
 }
 
-export async function regroupAllPhotos(): Promise<{ tripsCreated: number; photosGrouped: number }> {
-  const unassigned = await db
-    .select()
-    .from(photosTable)
-    .where(isNull(photosTable.tripId))
-    .orderBy(asc(photosTable.takenAt));
+// Arbitrary constant: all trip creation / assignment runs under this advisory
+// lock so that two uploads at the same time (e.g. from two different people)
+// can neither create duplicate trips nor overwrite each other's counters.
+const TRIP_ASSIGNMENT_LOCK = 727_001;
 
-  if (unassigned.length === 0) {
-    return { tripsCreated: 0, photosGrouped: 0 };
-  }
-
-  const groups = groupPhotosIntoTrips(unassigned as PhotoRow[]);
-  let tripsCreated = 0;
-  let photosGrouped = 0;
-
-  for (const group of groups) {
-    if (group.photos.length === 0) continue;
-
-    const locationName = await reverseGeocode(group.centerLat, group.centerLng);
-
-    const [trip] = await db
-      .insert(tripsTable)
-      .values({
-        name: generateTripName(locationName, group.startDate),
-        startDate: group.startDate,
-        endDate: group.endDate,
-        coverPhotoId: group.photos[0].id,
-        centerLat: group.centerLat,
-        centerLng: group.centerLng,
-        locationName,
-        photoCount: group.photos.length,
-      })
-      .returning();
-
-    for (const photo of group.photos) {
-      await db
-        .update(photosTable)
-        .set({ tripId: trip.id })
-        .where(eq(photosTable.id, photo.id));
-      photosGrouped++;
-    }
-
-    tripsCreated++;
-    logger.info({ tripId: trip.id, photoCount: group.photos.length, locationName }, "Created trip");
-  }
-
-  return { tripsCreated, photosGrouped };
+export async function lockTripAssignment(tx: DbOrTx): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(${TRIP_ASSIGNMENT_LOCK})`);
 }
 
-export async function assignPhotoToTrip(photo: PhotoRow): Promise<number | null> {
+export async function regroupAllPhotos(): Promise<{ tripsCreated: number; photosGrouped: number }> {
+  return db.transaction(async (tx) => {
+    await lockTripAssignment(tx);
+
+    const unassigned = await tx
+      .select()
+      .from(photosTable)
+      .where(isNull(photosTable.tripId))
+      .orderBy(asc(photosTable.takenAt));
+
+    if (unassigned.length === 0) {
+      return { tripsCreated: 0, photosGrouped: 0 };
+    }
+
+    const groups = groupPhotosIntoTrips(unassigned as PhotoRow[]);
+    let tripsCreated = 0;
+    let photosGrouped = 0;
+
+    for (const group of groups) {
+      if (group.photos.length === 0) continue;
+
+      const locationName = await reverseGeocode(group.centerLat, group.centerLng);
+
+      const [trip] = await tx
+        .insert(tripsTable)
+        .values({
+          name: generateTripName(locationName, group.startDate),
+          startDate: group.startDate,
+          endDate: group.endDate,
+          coverPhotoId: group.photos[0].id,
+          centerLat: group.centerLat,
+          centerLng: group.centerLng,
+          locationName,
+          photoCount: group.photos.length,
+        })
+        .returning();
+
+      await tx
+        .update(photosTable)
+        .set({ tripId: trip.id })
+        .where(inArray(photosTable.id, group.photos.map((p) => p.id)));
+      photosGrouped += group.photos.length;
+
+      await recomputeTrip(tx, trip.id);
+      tripsCreated++;
+      logger.info({ tripId: trip.id, photoCount: group.photos.length, locationName }, "Created trip");
+    }
+
+    return { tripsCreated, photosGrouped };
+  });
+}
+
+/**
+ * Put a freshly inserted photo into the best matching trip (or create one),
+ * and update that trip's derived columns from the real photo rows.
+ *
+ * MUST be called inside a transaction (pass `tx`) that already holds the
+ * lock from `lockTripAssignment`.
+ */
+export async function assignPhotoToTrip(tx: DbOrTx, photo: PhotoRow): Promise<number | null> {
   if (photo.lat == null || photo.lng == null || photo.takenAt == null) return null;
 
-  const existingTrips = await db.select().from(tripsTable).orderBy(asc(tripsTable.startDate));
+  const existingTrips = await tx.select().from(tripsTable).orderBy(asc(tripsTable.startDate));
 
   const photoDate = photo.takenAt as Date;
   const photoLat = photo.lat;
   const photoLng = photo.lng;
 
+  // Pick the NEAREST matching trip, not just the first one in date order.
+  let best: { id: number; dist: number } | null = null;
   for (const trip of existingTrips) {
-    if (!trip.centerLat || !trip.centerLng) continue;
-    const distOk = haversineKm(photoLat, photoLng, trip.centerLat, trip.centerLng) <= MAX_DISTANCE_KM;
+    if (trip.centerLat == null || trip.centerLng == null) continue;
+    const dist = haversineKm(photoLat, photoLng, trip.centerLat, trip.centerLng);
     const timeOk =
       daysDiff(photoDate, trip.startDate) <= MAX_DAYS_GAP ||
-      daysDiff(photoDate, trip.endDate) <= MAX_DAYS_GAP;
-
-    if (distOk && timeOk) {
-      const newCount = trip.photoCount + 1;
-      const newCenterLat = (trip.centerLat * (newCount - 1) + photoLat) / newCount;
-      const newCenterLng = (trip.centerLng * (newCount - 1) + photoLng) / newCount;
-      const newStart = photoDate < trip.startDate ? photoDate : trip.startDate;
-      const newEnd = photoDate > trip.endDate ? photoDate : trip.endDate;
-
-      await db
-        .update(tripsTable)
-        .set({
-          photoCount: newCount,
-          centerLat: newCenterLat,
-          centerLng: newCenterLng,
-          startDate: newStart,
-          endDate: newEnd,
-        })
-        .where(eq(tripsTable.id, trip.id));
-
-      return trip.id;
+      daysDiff(photoDate, trip.endDate) <= MAX_DAYS_GAP ||
+      (photoDate >= trip.startDate && photoDate <= trip.endDate);
+    if (dist <= MAX_DISTANCE_KM && timeOk && (!best || dist < best.dist)) {
+      best = { id: trip.id, dist };
     }
+  }
+
+  if (best) {
+    await tx.update(photosTable).set({ tripId: best.id }).where(eq(photosTable.id, photo.id));
+    await recomputeTrip(tx, best.id);
+    return best.id;
   }
 
   // No matching trip — create a new one with reverse geocoding
   const locationName = await reverseGeocode(photoLat, photoLng);
 
-  const [newTrip] = await db
+  const [newTrip] = await tx
     .insert(tripsTable)
     .values({
       name: generateTripName(locationName, photoDate),
@@ -219,6 +231,9 @@ export async function assignPhotoToTrip(photo: PhotoRow): Promise<number | null>
       photoCount: 1,
     })
     .returning();
+
+  await tx.update(photosTable).set({ tripId: newTrip.id }).where(eq(photosTable.id, photo.id));
+  await recomputeTrip(tx, newTrip.id);
 
   logger.info({ tripId: newTrip.id, locationName }, "New trip created via reverse geocode");
   return newTrip.id;

@@ -10,6 +10,11 @@ A cinematic personal travel memory app — upload photos from your phone and the
 - `pnpm run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- Admin env (set locally in `.env` AND in Netlify → Site settings → Environment variables):
+  - `ADMIN_PASSWORD` — the only person who can rename/delete albums, merge, delete photos
+  - `SESSION_SECRET` — long random string used to sign the admin cookie (`openssl rand -hex 32`)
+  - If either is missing, nobody can act as admin (fails closed)
+- Repair counts (admin signed in): `POST /api/trips/repair`
 
 ## Stack
 

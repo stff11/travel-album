@@ -42,6 +42,18 @@ export async function deleteFromCloudinary(publicId: string): Promise<void> {
   }
 }
 
+// Used when a whole trip is deleted (Cloudinary allows 100 ids per call)
+export async function deleteManyFromCloudinary(publicIds: string[]): Promise<void> {
+  for (let i = 0; i < publicIds.length; i += 100) {
+    const chunk = publicIds.slice(i, i + 100);
+    try {
+      await cloudinary.api.delete_resources(chunk);
+    } catch (err) {
+      logger.warn({ err, count: chunk.length }, "Failed to delete batch from Cloudinary");
+    }
+  }
+}
+
 // /**
 //  * Build an optimised Cloudinary URL for a given display width.
 //  * Uses automatic format + quality, and crops to fill the requested size.

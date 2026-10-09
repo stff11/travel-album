@@ -1,8 +1,8 @@
 import { Router, type IRouter } from "express";
 import multer from "multer";
 import crypto from "crypto";
-import { db, photosTable, tripsTable } from "@workspace/db";
-import { eq, asc } from "drizzle-orm";
+import { db, photosTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 import {
   ListPhotosQueryParams,
   GetPhotoParams,
@@ -12,8 +12,10 @@ import {
   RegroupPhotosResponse,
 } from "@workspace/api-zod";
 import { logger } from "../lib/logger";
-import { assignPhotoToTrip, regroupAllPhotos } from "../lib/tripGrouping";
+import { assignPhotoToTrip, lockTripAssignment, regroupAllPhotos } from "../lib/tripGrouping";
+import { recomputeTrip } from "../lib/tripStats";
 import { uploadToCloudinary, deleteFromCloudinary } from "../lib/cloudinary";
+import { requireAdmin } from "../lib/auth";
 import exifr from "exifr";
 
 const router: IRouter = Router();
@@ -54,11 +56,13 @@ router.get("/photos", async (req, res): Promise<void> => {
   res.json(ListPhotosResponse.parse(photos.map(serializePhoto)));
 });
 
-router.post("/photos/regroup", async (req, res): Promise<void> => {
+// ADMIN ONLY
+router.post("/photos/regroup", requireAdmin, async (_req, res): Promise<void> => {
   const result = await regroupAllPhotos();
   res.json(RegroupPhotosResponse.parse(result));
 });
 
+// Anyone may upload.
 router.post(
   "/photos/upload",
   upload.single("file"),
@@ -70,52 +74,100 @@ router.post(
 
     const { buffer, originalname, mimetype } = req.file;
 
-    // 1. Deduplication (Hash raw buffer)
+    // 1. Deduplication (hash raw buffer)
     const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
     const [existing] = await db.select().from(photosTable).where(eq(photosTable.fileHash, fileHash));
     if (existing) {
+      // An earlier upload may have been left without a trip (e.g. its trip was
+      // deleted or assignment failed). Give it another chance to be placed.
+      if (existing.tripId == null && existing.lat != null && existing.lng != null) {
+        await placePhotoInTrip(existing);
+        const [fresh] = await db.select().from(photosTable).where(eq(photosTable.id, existing.id));
+        res.status(201).json(GetPhotoResponse.parse(serializePhoto(fresh ?? existing)));
+        return;
+      }
       res.status(201).json(GetPhotoResponse.parse(serializePhoto(existing)));
       return;
     }
 
-    // 2. Metadata Extraction (from memory buffer)
-    let lat = null, lng = null, takenAt = new Date();
+    // 2. Metadata extraction (from memory buffer)
+    let lat: number | null = null;
+    let lng: number | null = null;
+    let takenAt = new Date();
     try {
       const data = await exifr.parse(buffer, { gps: true, tiff: true, exif: true });
-      if (data?.latitude && data?.longitude) { lat = data.latitude; lng = data.longitude; }
-      if (data?.DateTimeOriginal) takenAt = data.DateTimeOriginal;
-    } catch (err) { logger.warn({ err }, "EXIF extraction failed"); }
-
-    // 3. Upload directly to Cloudinary (buffer stream)
-    try {
-      const cdn = await uploadToCloudinary(buffer);
-
-      // 4. Save to DB
-      const [photo] = await db.insert(photosTable).values({
-        filename: originalname,
-        originalName: originalname,
-        mimeType: mimetype,
-        fileHash,
-        cloudinaryPublicId: cdn.publicId,
-        cloudinaryUrl: cdn.secureUrl,
-        lat, lng, takenAt,
-        tripId: null,
-      }).returning();
-
-      // 5. Grouping Logic
-      const tripId = await assignPhotoToTrip({ ...photo, lat, lng, takenAt });
-      if (tripId != null) {
-        await db.update(photosTable).set({ tripId }).where(eq(photosTable.id, photo.id));
-        photo.tripId = tripId;
+      if (data?.latitude != null && data?.longitude != null) {
+        lat = data.latitude;
+        lng = data.longitude;
       }
+      if (data?.DateTimeOriginal) takenAt = data.DateTimeOriginal;
+    } catch (err) {
+      logger.warn({ err }, "EXIF extraction failed");
+    }
 
-      res.status(201).json(GetPhotoResponse.parse(serializePhoto(photo)));
+    // 3. Upload to Cloudinary
+    let cdn: Awaited<ReturnType<typeof uploadToCloudinary>>;
+    try {
+      cdn = await uploadToCloudinary(buffer);
     } catch (err) {
       logger.error({ err }, "Cloudinary upload failed");
       res.status(500).json({ error: "Failed to upload image" });
+      return;
     }
-  }
+
+    // 4. Insert + assign to a trip + update the trip's totals, atomically.
+    //    Either everything is saved or nothing is, so photo_count can't drift.
+    try {
+      const photo = await db.transaction(async (tx) => {
+        await lockTripAssignment(tx);
+
+        const [inserted] = await tx
+          .insert(photosTable)
+          .values({
+            filename: originalname,
+            originalName: originalname,
+            mimeType: mimetype,
+            fileHash,
+            cloudinaryPublicId: cdn.publicId,
+            cloudinaryUrl: cdn.secureUrl,
+            lat,
+            lng,
+            takenAt,
+            tripId: null,
+          })
+          .returning();
+
+        await assignPhotoToTrip(tx, { ...inserted, lat, lng, takenAt });
+        const [final] = await tx.select().from(photosTable).where(eq(photosTable.id, inserted.id));
+        return final ?? inserted;
+      });
+
+      res.status(201).json(GetPhotoResponse.parse(serializePhoto(photo)));
+    } catch (err) {
+      // Roll back the CDN copy so we don't leak an unreferenced file.
+      await deleteFromCloudinary(cdn.publicId);
+
+      // Two people uploaded the identical file at the same moment: the unique
+      // hash index rejected the second one. Return the winner.
+      if ((err as { code?: string })?.code === "23505") {
+        const [winner] = await db.select().from(photosTable).where(eq(photosTable.fileHash, fileHash));
+        if (winner) {
+          res.status(201).json(GetPhotoResponse.parse(serializePhoto(winner)));
+          return;
+        }
+      }
+      logger.error({ err }, "Saving photo failed");
+      res.status(500).json({ error: "Failed to save photo" });
+    }
+  },
 );
+
+async function placePhotoInTrip(photo: DbPhoto): Promise<void> {
+  await db.transaction(async (tx) => {
+    await lockTripAssignment(tx);
+    await assignPhotoToTrip(tx, photo);
+  });
+}
 
 router.get("/photos/:id", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
@@ -129,7 +181,8 @@ router.get("/photos/:id", async (req, res): Promise<void> => {
   res.json(GetPhotoResponse.parse(serializePhoto(photo)));
 });
 
-router.delete("/photos/:id", async (req, res): Promise<void> => {
+// ADMIN ONLY
+router.delete("/photos/:id", requireAdmin, async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = DeletePhotoParams.safeParse({ id: parseInt(raw, 10) });
   if (!params.success) {
@@ -138,53 +191,23 @@ router.delete("/photos/:id", async (req, res): Promise<void> => {
   }
 
   const photo = await db.transaction(async (tx) => {
+    // Same lock as uploads/merges so trip totals are never computed from a
+    // half-finished change.
+    await lockTripAssignment(tx);
+
     const [deleted] = await tx.delete(photosTable).where(eq(photosTable.id, params.data.id)).returning();
     if (!deleted) return null;
 
     if (deleted.tripId) {
-      // Lock the trip row so concurrent deletes of photos in the same trip
-      // (e.g. a bulk delete) are serialized instead of racing to read/write
-      // photoCount, centerLat/Lng and coverPhotoId off stale data.
-      const [trip] = await tx
-        .select()
-        .from(tripsTable)
-        .where(eq(tripsTable.id, deleted.tripId))
-        .for("update");
-
-      const remaining = await tx
-        .select()
-        .from(photosTable)
-        .where(eq(photosTable.tripId, deleted.tripId))
-        .orderBy(asc(photosTable.takenAt));
-
-      if (remaining.length === 0) {
-        await tx.delete(tripsTable).where(eq(tripsTable.id, deleted.tripId));
-      } else {
-        // Recompute the center from the photos that are actually still in the trip,
-        // so a deleted outlier photo no longer skews the map position.
-        const geotagged = remaining.filter((p) => p.lat != null && p.lng != null);
-        const centerLat = geotagged.length > 0
-          ? geotagged.reduce((s, p) => s + (p.lat as number), 0) / geotagged.length
-          : trip?.centerLat ?? null;
-        const centerLng = geotagged.length > 0
-          ? geotagged.reduce((s, p) => s + (p.lng as number), 0) / geotagged.length
-          : trip?.centerLng ?? null;
-
-        // If the deleted photo was the cover, promote the earliest remaining photo instead.
-        const coverPhotoId = trip?.coverPhotoId === deleted.id ? remaining[0].id : trip?.coverPhotoId;
-
-        await tx
-          .update(tripsTable)
-          .set({ photoCount: remaining.length, centerLat, centerLng, coverPhotoId })
-          .where(eq(tripsTable.id, deleted.tripId));
-      }
+      // Recounts photos, dates, map center and cover from what is really
+      // left, and removes the trip if it is now empty.
+      await recomputeTrip(tx, deleted.tripId);
     }
-
     return deleted;
   });
   if (!photo) { res.status(404).json({ error: "Photo not found" }); return; }
 
-  try { await deleteFromCloudinary(photo.cloudinaryPublicId); } catch (e) { logger.warn("Cloudinary delete failed"); }
+  await deleteFromCloudinary(photo.cloudinaryPublicId);
   res.sendStatus(204);
 });
 
