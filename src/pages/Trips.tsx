@@ -2,10 +2,12 @@ import {
   useListTrips,
   getListTripsQueryKey,
   useMergeTrips,
+  getGetTripQueryOptions,
+  getGetTripPhotosQueryOptions,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { format } from "date-fns";
 import {
   MapPin,
@@ -15,8 +17,16 @@ import {
   ArrowRight,
   Search,
 } from "lucide-react";
-import { thumbUrl } from "@/lib/photoUrl";
-import { useMemo, useState } from "react";
+import { cardUrl, cardSrcSet } from "@/lib/photoUrl";
+import { useAuth, isUnauthorized } from "@/lib/auth";
+import { useToast } from "@/hooks/use-toast";
+import {
+  tripsUrl,
+  rememberTripsUrl,
+  saveTripsScroll,
+  readTripsScroll,
+} from "@/lib/tripsReturn";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export default function Trips() {
@@ -25,6 +35,9 @@ export default function Trips() {
   });
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
+  const { isAdmin, handleUnauthorized } = useAuth();
+  const { toast } = useToast();
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const [mergeMode, setMergeMode] = useState(false);
   const [selected, setSelected] = useState<number[]>([]);
@@ -35,10 +48,79 @@ export default function Trips() {
         queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
         exitMergeMode();
       },
+      onError: (err) => {
+        if (isUnauthorized(err)) handleUnauthorized();
+        toast({
+          variant: "destructive",
+          title: isUnauthorized(err) ? "Admin sign-in required" : "Merge failed",
+        });
+      },
     },
   });
 
-  const [query, setQuery] = useState("");
+  // The search text lives in the URL (?q=...) so that back/forward, refresh
+  // and shared links all restore the same filtered view.
+  const search = useSearch();
+  const urlQuery = useMemo(() => new URLSearchParams(search).get("q") ?? "", [search]);
+  const [query, setQuery] = useState(urlQuery);
+
+  // Only act while /trips is really the active page. When an album is opening
+  // (its code may still be loading) this component can briefly still be
+  // mounted while the URL already points at /trips/:id, where there is no ?q=
+  // — it must not mistake that for "the user cleared the search".
+  const [path] = useLocation();
+  const onTripsPage = path === "/trips";
+
+  // Browser back/forward (or a link) changed ?q= -> follow it.
+  const lastUrlQuery = useRef(urlQuery);
+  useEffect(() => {
+    if (!onTripsPage || lastUrlQuery.current === urlQuery) return;
+    lastUrlQuery.current = urlQuery;
+    setQuery((current) => (current.trim() === urlQuery.trim() ? current : urlQuery));
+  }, [urlQuery, onTripsPage]);
+
+  // Typing -> update ?q= in place (replace, so each keystroke doesn't add a
+  // history entry) and remember it for the album page's back arrow.
+  const currentUrl = tripsUrl(query);
+  useEffect(() => {
+    if (!onTripsPage) return;
+    if (query.trim() !== urlQuery.trim()) {
+      lastUrlQuery.current = query.trim();
+      navigate(currentUrl, { replace: true });
+    }
+    rememberTripsUrl(currentUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUrl, onTripsPage]);
+
+  // Restore scroll position when coming back from an album.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current || isLoading || !trips || !scrollRef.current) return;
+    restoredRef.current = true;
+    const top = readTripsScroll(tripsUrl(urlQuery));
+    if (top) scrollRef.current.scrollTop = top;
+  }, [isLoading, trips, urlQuery]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => saveTripsScroll(tripsUrl(query), el.scrollTop));
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [query]);
+
+  // Warm the cache for the album the pointer is heading to.
+  const prefetchTrip = (id: number) => {
+    queryClient.prefetchQuery(getGetTripQueryOptions(id));
+    queryClient.prefetchQuery(getGetTripPhotosQueryOptions(id));
+  };
 
   // Case- and accent-insensitive: "zurich" matches "Zürich"
   const normalize = (v: string) =>
@@ -67,7 +149,7 @@ export default function Trips() {
 
   const isSearching = query.trim().length > 0;
 
-  const canMerge = (trips?.length ?? 0) >= 2;
+  const canMerge = isAdmin && (trips?.length ?? 0) >= 2;
 
   function enterMergeMode() {
     setMergeMode(true);
@@ -97,7 +179,7 @@ export default function Trips() {
   const targetTrip = trips?.find((t) => t.id === selected[1]);
 
   return (
-    <div className="h-full w-full overflow-y-auto p-8 md:p-12">
+    <div ref={scrollRef} className="h-full w-full overflow-y-auto p-8 md:p-12">
       <div className="max-w-7xl mx-auto space-y-12">
         <header className="flex items-start justify-between gap-4">
           <div className="space-y-4 max-w-2xl">
@@ -229,15 +311,13 @@ export default function Trips() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 auto-rows-[300px]">
             {filteredTrips.map((trip, i) => {
-              const url = trip.coverPhotoPath
-                ? thumbUrl(
-                    {
-                      cloudinaryUrl: trip.coverCloudinaryUrl ?? null,
-                      filename: trip.coverPhotoPath.split("/").pop() ?? "",
-                    },
-                    800
-                  )
+              const coverPhoto = trip.coverPhotoPath
+                ? {
+                    cloudinaryUrl: trip.coverCloudinaryUrl ?? null,
+                    filename: trip.coverPhotoPath.split("/").pop() ?? "",
+                  }
                 : null;
+              const url = coverPhoto ? cardUrl(coverPhoto, 800) : null;
 
               const isLarge = i % 5 === 0;
               const isSelected = selected.includes(trip.id);
@@ -252,7 +332,7 @@ export default function Trips() {
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{
-                    delay: i * 0.05,
+                    delay: Math.min(i, 9) * 0.04,
                     duration: 0.6,
                     ease: [0.16, 1, 0.3, 1],
                   }}
@@ -267,6 +347,7 @@ export default function Trips() {
                     isTarget && "ring-emerald-400",
                     isDisabled && "opacity-40"
                   )}
+                  onPointerEnter={() => !mergeMode && prefetchTrip(trip.id)}
                   onClick={() => {
                     if (mergeMode) {
                       toggleSelect(trip.id);
@@ -286,7 +367,12 @@ export default function Trips() {
                   {url ? (
                     <img
                       src={url}
+                      srcSet={coverPhoto ? cardSrcSet(coverPhoto) : undefined}
+                      sizes="(min-width: 1024px) 33vw, (min-width: 768px) 50vw, 100vw"
                       alt={trip.name}
+                      loading={i < 6 ? "eager" : "lazy"}
+                      fetchPriority={i < 3 ? "high" : "auto"}
+                      decoding="async"
                       className={cn(
                         "absolute inset-0 w-full h-full object-cover transition-all duration-1000",
                         !mergeMode &&

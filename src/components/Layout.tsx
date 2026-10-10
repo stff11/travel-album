@@ -1,6 +1,8 @@
 import { Link, useLocation } from "wouter";
 import { Compass, Image as ImageIcon, UploadCloud, Map, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getTripsReturnUrl } from "@/lib/tripsReturn";
+import { AdminButton } from "@/components/AdminButton";
 import { useHealthCheck, getHealthCheckQueryKey } from "@workspace/api-client-react";
 
 interface LayoutProps {
@@ -33,7 +35,12 @@ export function Layout({ children }: LayoutProps) {
               const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
               const Icon = item.icon;
               return (
-                <Link key={item.href} href={item.href}>
+                <Link
+                  key={item.href}
+                  // From inside an album, "Trips" goes back to the list the
+                  // person came from (with their search), not a fresh one.
+                  href={item.href === "/trips" && location.startsWith("/trips/") ? getTripsReturnUrl() : item.href}
+                >
                   <div
                     className={cn(
                       "flex items-center gap-4 px-3 py-3 rounded-lg cursor-pointer transition-colors duration-300",
@@ -52,11 +59,14 @@ export function Layout({ children }: LayoutProps) {
             })}
           </div>
         </div>
-        <div className="pb-4 flex justify-center md:justify-start pl-2">
+        <div className="pb-4 space-y-3">
+          <AdminButton />
+        <div className="flex justify-center md:justify-start pl-3">
            <div className="flex items-center gap-2 text-xs text-muted-foreground" title={`Status: ${health?.status || 'checking...'}`}>
              <div className={cn("w-2 h-2 rounded-full animate-pulse", health?.status === 'ok' ? "bg-green-500" : "bg-primary/50")} />
              <span className="hidden md:block">System Status</span>
            </div>
+        </div>
         </div>
       </nav>
 
