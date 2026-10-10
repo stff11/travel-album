@@ -11,6 +11,8 @@ import {
   getGetStatsQueryKey,
   getListTripsQueryKey,
   getGetTripsMapQueryKey,
+  getGetTripQueryKey,
+  getGetTripPhotosQueryKey,
 } from "@workspace/api-client-react";
 
 export type FileStatus = "pending" | "uploading" | "done" | "error";
@@ -34,76 +36,88 @@ interface UploadQueueContextType {
 
 const UploadQueueContext = createContext<UploadQueueContextType | null>(null);
 
-// Keep at 1 to avoid race conditions in trip assignment:
-// concurrent uploads can each see "no matching trip" and create duplicates.
+// Keep at 1 per browser: the server serialises trip assignment with a database
+// lock, but one-at-a-time also keeps memory/bandwidth use predictable.
 const CONCURRENCY = 1;
+const MAX_ATTEMPTS = 2; // one automatic retry for network errors / 5xx
 
 export function UploadQueueProvider({ children }: { children: ReactNode }) {
   const [queue, setQueue] = useState<QueuedFile[]>([]);
-  const processingCount = useRef(0);
+  // Files and bookkeeping live in refs, so the processing loop never has to
+  // read React state (the old version ran its upload from inside a setState
+  // updater, which React is allowed to call twice).
+  const filesRef = useRef(new Map<string, File>());
   const pendingIds = useRef<string[]>([]);
+  const activeCount = useRef(0);
+  const touchedTrips = useRef(new Set<number>());
   const queryClient = useQueryClient();
 
   const updateFile = useCallback((id: string, patch: Partial<QueuedFile>) => {
     setQueue((q) => q.map((f) => (f.id === id ? { ...f, ...patch } : f)));
   }, []);
 
-  const processNext = useCallback(async () => {
-    if (processingCount.current >= CONCURRENCY) return;
-    const id = pendingIds.current.shift();
-    if (!id) return;
+  const refreshData = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
+    // Albums that just received photos must refetch too.
+    for (const tripId of touchedTrips.current) {
+      queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(tripId) });
+      queryClient.invalidateQueries({ queryKey: getGetTripPhotosQueryKey(tripId) });
+    }
+    touchedTrips.current.clear();
+  }, [queryClient]);
 
-    processingCount.current += 1;
-    updateFile(id, { status: "uploading" });
-
-    // We need to read the file from the queue ref — use a closure snapshot
-    setQueue((snapshot) => {
-      const item = snapshot.find((f) => f.id === id);
-      if (!item) {
-        processingCount.current -= 1;
-        return snapshot;
+  const uploadOne = useCallback(async (file: File): Promise<void> => {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+        const res = await fetch("/api/photos/upload", { method: "POST", body: formData });
+        if (res.ok) {
+          const photo = (await res.json().catch(() => null)) as { tripId?: number | null } | null;
+          if (photo?.tripId != null) touchedTrips.current.add(photo.tripId);
+          return;
+        }
+        lastError = new Error(`HTTP ${res.status}`);
+        if (res.status < 500) break; // 4xx: retrying won't help
+      } catch (err) {
+        lastError = err; // network error — retry
       }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    throw lastError;
+  }, []);
 
-      const doUpload = async () => {
-        try {
-          const formData = new FormData();
-          formData.append("file", item.file);
-          const res = await fetch("/api/photos/upload", {
-            method: "POST",
-            body: formData,
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          updateFile(id, { status: "done" });
-        } catch (err) {
+  const pump = useCallback(() => {
+    while (activeCount.current < CONCURRENCY && pendingIds.current.length > 0) {
+      const id = pendingIds.current.shift()!;
+      const file = filesRef.current.get(id);
+      if (!file) continue;
+
+      activeCount.current += 1;
+      updateFile(id, { status: "uploading" });
+
+      uploadOne(file)
+        .then(() => updateFile(id, { status: "done" }))
+        .catch((err) =>
           updateFile(id, {
             status: "error",
             error: err instanceof Error ? err.message : "Upload failed",
-          });
-        } finally {
-          processingCount.current -= 1;
-          // Kick off next in queue
-          processNext();
-
-          // When nothing is processing and pending queue is empty, refresh data
-          setQueue((current) => {
-            const stillBusy = current.some(
-              (f) => f.status === "pending" || f.status === "uploading"
-            );
-            if (!stillBusy) {
-              queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
-              queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
-              queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
-            }
-            return current;
-          });
-        }
-      };
-
-      doUpload();
-      return snapshot;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [updateFile, queryClient]);
+          }),
+        )
+        .finally(() => {
+          filesRef.current.delete(id);
+          activeCount.current -= 1;
+          if (pendingIds.current.length === 0 && activeCount.current === 0) {
+            refreshData(); // whole batch finished
+          } else {
+            pump();
+          }
+        });
+    }
+  }, [updateFile, uploadOne, refreshData]);
 
   const enqueue = useCallback(
     (files: File[]) => {
@@ -113,15 +127,12 @@ export function UploadQueueProvider({ children }: { children: ReactNode }) {
         status: "pending",
       }));
 
+      for (const item of newItems) filesRef.current.set(item.id, item.file);
       setQueue((q) => [...q, ...newItems]);
       pendingIds.current.push(...newItems.map((f) => f.id));
-
-      // Kick off up to CONCURRENCY processors
-      for (let i = 0; i < Math.min(CONCURRENCY, newItems.length); i++) {
-        processNext();
-      }
+      pump();
     },
-    [processNext]
+    [pump],
   );
 
   const clearDone = useCallback(() => {
