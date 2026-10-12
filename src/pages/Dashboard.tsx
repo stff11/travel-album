@@ -34,10 +34,13 @@ export default function Dashboard() {
           {/* Stats Hero */}
           <div className="space-y-2">
             <h1 className="text-4xl font-serif tracking-tight">The Archive</h1>
-            <div className="flex gap-4 text-sm text-muted-foreground tracking-widest uppercase">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground tracking-[0.14em] uppercase">
               <span>{stats?.totalTrips || 0} Journeys</span>
-              <span>&middot;</span>
               <span>{stats?.totalPhotos || 0} Captures</span>
+              <span>
+                {stats?.totalCountries || 0}{" "}
+                {stats?.totalCountries === 1 ? "Country" : "Countries"}
+              </span>
             </div>
           </div>
 
