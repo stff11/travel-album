@@ -70,7 +70,15 @@ export async function recomputeTrip(tx: DbOrTx, tripId: number): Promise<boolean
   return true;
 }
 
-/** Repair every trip. Used by the admin "repair" endpoint. */
+/**
+ * Repair every trip: recount photos, dates, map center and cover, and remove
+ * trips that have no photos.
+ *
+ * Done with a fixed number of set-based SQL statements (NOT one round trip per
+ * trip), so it takes about the same time for 5 trips or 5,000. The previous
+ * per-trip loop needed ~6 queries per trip and hit Netlify's 30 s function
+ * limit against a remote database.
+ */
 export async function repairAllTrips(): Promise<{
   tripsChecked: number;
   tripsFixed: number;
@@ -78,40 +86,92 @@ export async function repairAllTrips(): Promise<{
   orphanPhotos: number;
 }> {
   return db.transaction(async (tx) => {
-    const before = await tx.select().from(tripsTable);
-    let fixed = 0;
-    let removed = 0;
+    // Same lock as uploads / merges / deletes, so we never recount in the
+    // middle of someone else's change.
+    await tx.execute(sql`select pg_advisory_xact_lock(727001)`);
 
-    for (const trip of before) {
-      const kept = await recomputeTrip(tx, trip.id);
-      if (!kept) {
-        removed++;
-        continue;
-      }
-      const [after] = await tx.select().from(tripsTable).where(eq(tripsTable.id, trip.id));
-      if (
-        after &&
-        (after.photoCount !== trip.photoCount ||
-          after.coverPhotoId !== trip.coverPhotoId ||
-          after.startDate.getTime() !== trip.startDate.getTime() ||
-          after.endDate.getTime() !== trip.endDate.getTime() ||
-          Math.abs((after.centerLat ?? 0) - (trip.centerLat ?? 0)) > 0.0001 ||
-          Math.abs((after.centerLng ?? 0) - (trip.centerLng ?? 0)) > 0.0001)
-      ) {
-        fixed++;
-      }
-    }
+    const rowsOf = (r: { rows: Array<Record<string, unknown>> }) => r.rows;
 
-    const [orphans] = await tx
-      .select({ n: count() })
-      .from(photosTable)
-      .where(isNull(photosTable.tripId));
+    const [{ n: tripsChecked }] = rowsOf(
+      await tx.execute(sql`select count(*)::int as n from trips`),
+    ) as Array<{ n: number }>;
+
+    // 1) Trips with no photos left.
+    const removed = rowsOf(
+      await tx.execute(sql`
+        delete from trips t
+        where not exists (select 1 from photos p where p.trip_id = t.id)
+        returning t.id`),
+    );
+
+    // 2) Count / dates / center, from the real photo rows. Only rows that are
+    //    actually wrong are written (tiny tolerance on the coordinates).
+    const statFixed = rowsOf(
+      await tx.execute(sql`
+        with agg as (
+          select trip_id,
+                 count(*)::int  as cnt,
+                 min(taken_at)  as first_at,
+                 max(taken_at)  as last_at,
+                 avg(lat)       as clat,
+                 avg(lng)       as clng
+          from photos
+          where trip_id is not null
+          group by trip_id
+        )
+        update trips t set
+          photo_count = agg.cnt,
+          start_date  = coalesce(agg.first_at, t.start_date),
+          end_date    = coalesce(agg.last_at,  t.end_date),
+          center_lat  = coalesce(agg.clat, t.center_lat),
+          center_lng  = coalesce(agg.clng, t.center_lng),
+          updated_at  = now()
+        from agg
+        where agg.trip_id = t.id
+          and (
+            t.photo_count is distinct from agg.cnt
+            or t.start_date is distinct from coalesce(agg.first_at, t.start_date)
+            or t.end_date   is distinct from coalesce(agg.last_at,  t.end_date)
+            or abs(coalesce(t.center_lat, 0) - coalesce(agg.clat, t.center_lat, 0)) > 0.0001
+            or abs(coalesce(t.center_lng, 0) - coalesce(agg.clng, t.center_lng, 0)) > 0.0001
+          )
+        returning t.id`),
+    );
+
+    // 3) Cover photo: must exist and belong to the trip; otherwise use the
+    //    earliest photo.
+    const coverFixed = rowsOf(
+      await tx.execute(sql`
+        update trips t set
+          cover_photo_id = (
+            select p.id from photos p
+            where p.trip_id = t.id
+            order by p.taken_at asc nulls last, p.id asc
+            limit 1
+          ),
+          updated_at = now()
+        where t.cover_photo_id is null
+           or not exists (
+             select 1 from photos p
+             where p.id = t.cover_photo_id and p.trip_id = t.id
+           )
+        returning t.id`),
+    );
+
+    const [{ n: orphanPhotos }] = rowsOf(
+      await tx.execute(sql`select count(*)::int as n from photos where trip_id is null`),
+    ) as Array<{ n: number }>;
+
+    const fixedIds = new Set<number>([
+      ...statFixed.map((r) => Number(r.id)),
+      ...coverFixed.map((r) => Number(r.id)),
+    ]);
 
     return {
-      tripsChecked: before.length,
-      tripsFixed: fixed,
-      emptyTripsRemoved: removed,
-      orphanPhotos: orphans?.n ?? 0,
+      tripsChecked,
+      tripsFixed: fixedIds.size,
+      emptyTripsRemoved: removed.length,
+      orphanPhotos,
     };
   });
 }
