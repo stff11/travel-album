@@ -26,5 +26,6 @@ export function countCountries(locationNames: Array<string | null | undefined>):
     const country = countryFromLocationName(name);
     if (country) seen.add(countryKey(country));
   }
+  console.log(seen);
   return seen.size;
 }
