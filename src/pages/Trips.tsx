@@ -4,6 +4,8 @@ import {
   useMergeTrips,
   getGetTripQueryOptions,
   getGetTripPhotosQueryOptions,
+  getGetStatsQueryKey,
+  getGetTripsMapQueryKey,
 } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
@@ -46,6 +48,9 @@ export default function Trips() {
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
+        // A merge removes a trip: the totals on the map page change too.
+        queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
         exitMergeMode();
       },
       onError: (err) => {

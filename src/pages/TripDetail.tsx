@@ -4,13 +4,16 @@ import {
   getGetTripQueryKey,
   useGetTripPhotos,
   getGetTripPhotosQueryKey,
+  getListTripsQueryKey,
+  getGetTripsMapQueryKey,
+  getGetStatsQueryKey,
   useUpdateTrip,
   useDeleteTrip,
   useDeletePhoto,
 } from "@workspace/api-client-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
-import { useState, useEffect, useCallback } from "react";
+import { memo, useState, useEffect, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Trash2, Calendar, MapPin as MapPinIcon, Check, X, Edit2, ChevronLeft, ChevronRight, CheckSquare, Square } from "lucide-react";
 import { Link } from "wouter";
@@ -21,7 +24,38 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { photoUrl, thumbUrl, placeholderUrl } from "@/lib/photoUrl";
+import {
+  photoUrl,
+  thumbUrl,
+  thumbSrcSet,
+  placeholderUrl,
+  coverUrl as heroUrl,
+  cardUrl,
+  LIGHTBOX_WIDTH,
+} from "@/lib/photoUrl";
+import { useAuth, isUnauthorized } from "@/lib/auth";
+import { useToast } from "@/hooks/use-toast";
+import { getTripsReturnUrl } from "@/lib/tripsReturn";
+import {
+  prefetchImage,
+  prefetchAllowed,
+  isPrefetched,
+  retainHighPriority,
+  cancelBackgroundPrefetch,
+  fullSizeWarmCount,
+} from "@/lib/imagePrefetch";
+
+// How many thumbnails load immediately; the rest follow in batches of this size.
+const THUMB_BATCH = 12;
+// Safety cap for huge albums: thumbnails past this many are left to the
+// browser's normal lazy loading instead of being fetched up front.
+const THUMB_EAGER_MAX = 400;
+// How many full-size photos to quietly download in the background per album
+// (≈ 300–600 KB each). Raise for faster lightbox browsing, lower to save data.
+const WARM_FULLSIZE_COUNT = 30;
+// Lightbox: how many photos to fetch ahead of / behind the one being viewed.
+const LIGHTBOX_AHEAD = 4;
+const LIGHTBOX_BEHIND = 2;
 
 type Photo = {
   id: number;
@@ -41,16 +75,74 @@ type Photo = {
   cloudinaryPublicId?: string | null;
 };
 
+const THUMB_SIZES = "(min-width: 1024px) 16vw, (min-width: 768px) 20vw, 33vw";
+
+/**
+ * One grid thumbnail. It tracks its own "loaded" flag, so a thumbnail finishing
+ * only re-renders itself — not the whole grid (the old shared Set re-rendered
+ * every thumbnail each time any one image loaded).
+ */
+const Thumb = memo(function Thumb({
+  photo,
+  eager,
+  priority,
+  onLoaded,
+  className = "",
+}: {
+  photo: Photo;
+  /** true = start downloading now; false = browser decides (lazy, near viewport) */
+  eager: boolean;
+  priority: boolean;
+  onLoaded?: () => void;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const handleLoaded = () => {
+    setLoaded(true);
+    onLoaded?.();
+  };
+
+  // Images served from the browser cache can be complete before React
+  // attaches onLoad.
+  useEffect(() => {
+    if (imgRef.current?.complete && imgRef.current.naturalWidth > 0) handleLoaded();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <img
+      ref={imgRef}
+      src={thumbUrl(photo, 400)}
+      srcSet={thumbSrcSet(photo)}
+      sizes={THUMB_SIZES}
+      alt={photo.originalName}
+      className={`w-full h-full object-cover transition-all duration-300 ${loaded ? "opacity-100" : "opacity-0"} ${className}`}
+      loading={eager ? "eager" : "lazy"}
+      fetchPriority={priority ? "high" : "auto"}
+      decoding="async"
+      onLoad={handleLoaded}
+      // A broken image must still count as "done", or it would stall the
+      // release of the next batch of thumbnails.
+      onError={() => onLoaded?.()}
+      draggable={false}
+    />
+  );
+});
+
 function Lightbox({
   photos,
   initialIndex,
   onClose,
+  isAdmin,
   onSetCover,
   onDelete,
 }: {
   photos: Photo[];
   initialIndex: number;
   onClose: () => void;
+  isAdmin: boolean;
   onSetCover: (id: number) => void;
   onDelete: (id: number) => void;
 }) {
@@ -75,22 +167,25 @@ function Lightbox({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, prev, next]);
 
-  // Preload the full-resolution neighbor images so stepping through the
-  // lightbox with the arrow keys / buttons doesn't have to wait on a fresh
-  // network request each time.
+  // Fetch the photos around the current one at full size, nearest first, a few
+  // more in the direction of travel than behind. Requests go through the shared
+  // queue (limited concurrency, stale ones dropped when you skip ahead).
   useEffect(() => {
-    const neighbors = [index - 1, index + 1].filter((i) => i >= 0 && i < photos.length);
-    for (const i of neighbors) {
-      const neighbor = photos[i];
-      if (!neighbor || loadedIds.has(neighbor.id)) continue;
-      const img = new Image();
-      img.onload = () => markLoaded(neighbor.id);
-      img.src = photoUrl(neighbor);
+    const order: number[] = [];
+    for (let d = 1; d <= Math.max(LIGHTBOX_AHEAD, LIGHTBOX_BEHIND); d++) {
+      if (d <= LIGHTBOX_AHEAD) order.push(index + d);
+      if (d <= LIGHTBOX_BEHIND) order.push(index - d);
     }
-    // Only re-run when the current index or photo list changes; loadedIds is
-    // read for its guard, not to retrigger preloading of already-loaded photos.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index, photos]);
+    const targets = order
+      .filter((i) => i >= 0 && i < photos.length)
+      .map((i) => ({ photo: photos[i], url: photoUrl(photos[i], LIGHTBOX_WIDTH) }));
+
+    retainHighPriority(new Set(targets.map((t) => t.url)));
+    for (const { photo: p, url } of targets) {
+      if (isPrefetched(url)) markLoaded(p.id);
+      else prefetchImage(url, "high").then((ok) => ok && markLoaded(p.id));
+    }
+  }, [index, photos, markLoaded]);
 
   if (!photo) return null;
 
@@ -123,7 +218,7 @@ function Lightbox({
       )}
 
       <ContextMenu>
-        <ContextMenuTrigger asChild>
+        <ContextMenuTrigger asChild disabled={!isAdmin}>
           <div
             className="relative flex items-center justify-center max-w-[90vw] max-h-[90vh]"
             style={photo.width && photo.height ? { aspectRatio: `${photo.width} / ${photo.height}` } : undefined}
@@ -145,10 +240,10 @@ function Lightbox({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.25 }}
-              src={photoUrl(photo)}
+              src={photoUrl(photo, LIGHTBOX_WIDTH)}
               alt={photo.originalName}
               className="relative max-w-[90vw] max-h-[90vh] object-contain select-none rounded"
-              onContextMenu={(e) => e.stopPropagation()}
+              onContextMenu={(e) => isAdmin && e.stopPropagation()}
               onLoad={() => markLoaded(photo.id)}
               draggable={false}
             />
@@ -187,6 +282,8 @@ export default function TripDetail() {
   const [, setLocation] = useLocation();
   const id = Number(params.id);
   const queryClient = useQueryClient();
+  const { isAdmin, handleUnauthorized } = useAuth();
+  const { toast } = useToast();
 
   const { data: trip, isLoading: tripLoading } = useGetTrip(id, {
     query: { enabled: !!id, queryKey: getGetTripQueryKey(id) },
@@ -227,6 +324,11 @@ export default function TripDetail() {
 
   const deselectAll = useCallback(() => setSelectedIds(new Set()), []);
 
+  // Signing out (or an expired session) must also leave select mode.
+  useEffect(() => {
+    if (!isAdmin && isSelectMode) exitSelectMode();
+  }, [isAdmin, isSelectMode, exitSelectMode]);
+
   useEffect(() => {
     if (!isSelectMode) return;
     const onKey = (e: KeyboardEvent) => {
@@ -236,70 +338,112 @@ export default function TripDetail() {
     return () => window.removeEventListener("keydown", onKey);
   }, [isSelectMode, exitSelectMode]);
 
-  // Thumbnails that have finished loading, so we can fade each one in once
-  // instead of having it pop straight from the grey placeholder to loaded.
-  const [loadedThumbIds, setLoadedThumbIds] = useState<Set<number>>(() => new Set());
-  const markThumbLoaded = useCallback((photoId: number) => {
-    setLoadedThumbIds((prev) => (prev.has(photoId) ? prev : new Set(prev).add(photoId)));
-  }, []);
+  // ---- Loading photos ahead of the person ----------------------------------
+  // 1) Thumbnails: the first batch loads immediately. Each time a batch is
+  //    nearly done, the next batch is released — so the whole grid fills in
+  //    behind the scenes instead of only when you scroll to it. (Same <img>
+  //    elements and srcset as the visible ones, so the right size is cached.)
+  const [eagerCount, setEagerCount] = useState(THUMB_BATCH);
+  const eagerCountRef = useRef(THUMB_BATCH);
+  const loadedCountRef = useRef(0);
+  const totalPhotos = photos?.length ?? 0;
 
-  // Warm the browser cache with full-resolution versions of the first few
-  // photos while the album is open, during idle time and one at a time, so
-  // that opening the lightbox on any of them feels instant. Capped to a
-  // handful of photos so this never competes with the thumbnail grid for
-  // bandwidth or preloads an entire (possibly huge) album.
   useEffect(() => {
-    const candidates = ((photos ?? []) as Photo[]).slice(0, 8);
-    if (candidates.length === 0) return;
+    eagerCountRef.current = THUMB_BATCH;
+    loadedCountRef.current = 0;
+    setEagerCount(THUMB_BATCH);
+  }, [id]);
 
-    let cancelled = false;
-    let idleHandle: number | undefined;
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-
-    const preloadNext = (i: number) => {
-      if (cancelled || i >= candidates.length) return;
-      const img = new Image();
-      img.onload = img.onerror = () => preloadNext(i + 1);
-      img.src = photoUrl(candidates[i]);
-    };
-
-    if ("requestIdleCallback" in window) {
-      idleHandle = window.requestIdleCallback(() => preloadNext(0));
-    } else {
-      timeoutHandle = setTimeout(() => preloadNext(0), 1000);
+  const onThumbLoaded = useCallback(() => {
+    loadedCountRef.current += 1;
+    if (
+      loadedCountRef.current >= eagerCountRef.current - 4 &&
+      eagerCountRef.current < Math.min(totalPhotos, THUMB_EAGER_MAX) &&
+      prefetchAllowed()
+    ) {
+      eagerCountRef.current += THUMB_BATCH;
+      setEagerCount(eagerCountRef.current);
     }
+  }, [totalPhotos]);
 
-    return () => {
-      cancelled = true;
-      if (idleHandle !== undefined) window.cancelIdleCallback(idleHandle);
-      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  // 2) Full-size photos for the lightbox: once the first thumbnails are in
+  //    (or after a short wait), quietly download the first WARM_FULLSIZE_COUNT
+  //    photos at the exact size the lightbox uses, a few at a time at low
+  //    priority, so opening any of them is instant.
+  const firstBatchDone = eagerCount > THUMB_BATCH || totalPhotos <= THUMB_BATCH;
+  useEffect(() => {
+    const list = ((photos ?? []) as Photo[]).slice(0, fullSizeWarmCount(WARM_FULLSIZE_COUNT));
+    if (list.length === 0) return;
+
+    const start = () => {
+      for (const p of list) prefetchImage(photoUrl(p, LIGHTBOX_WIDTH), "low");
     };
-  }, [photos]);
+    const timer = setTimeout(start, firstBatchDone ? 300 : 2500);
+    return () => {
+      clearTimeout(timer);
+      cancelBackgroundPrefetch();
+    };
+  }, [photos, firstBatchDone]);
 
   const startEdit = () => {
-    if (trip) { setEditName(trip.name); setIsEditing(true); }
+    if (isAdmin && trip) { setEditName(trip.name); setIsEditing(true); }
+  };
+
+  /** Runs an admin action; on 401 drops back to read-only, on error shows a toast. */
+  const runAdmin = async (label: string, action: () => Promise<void>): Promise<boolean> => {
+    try {
+      await action();
+      return true;
+    } catch (err) {
+      if (isUnauthorized(err)) {
+        handleUnauthorized();
+        toast({ variant: "destructive", title: "Admin sign-in required", description: "Your session has ended. Sign in again to continue." });
+      } else {
+        toast({ variant: "destructive", title: `${label} failed`, description: err instanceof Error ? err.message : undefined });
+      }
+      return false;
+    }
+  };
+
+  /** After anything that changes photos/counts, refresh every view that shows them. */
+  const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: getGetTripPhotosQueryKey(id) });
+    queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(id) });
+    queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
   };
 
   const saveEdit = async () => {
     if (!trip || editName.trim() === "") { setIsEditing(false); return; }
-    await updateTrip.mutateAsync({ id, data: { name: editName } });
-    queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(id) });
+    const ok = await runAdmin("Rename", async () => {
+      await updateTrip.mutateAsync({ id, data: { name: editName.trim() } });
+    });
+    if (ok) refreshAll();
     setIsEditing(false);
   };
 
   const handleDeleteTrip = async () => {
-    if (confirm("Delete this trip and all its photos? This cannot be undone.")) {
+    if (!confirm("Delete this trip and all its photos? This cannot be undone.")) return;
+    const ok = await runAdmin("Delete trip", async () => {
       await deleteTrip.mutateAsync({ id });
-      setLocation("/trips");
+    });
+    if (ok) {
+      queryClient.removeQueries({ queryKey: getGetTripQueryKey(id) });
+      queryClient.removeQueries({ queryKey: getGetTripPhotosQueryKey(id) });
+      queryClient.invalidateQueries({ queryKey: getListTripsQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetTripsMapQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetStatsQueryKey() });
+      setLocation(getTripsReturnUrl());
     }
   };
 
   const handleDeletePhoto = async (photoId: number) => {
-    if (confirm("Delete this photo?")) {
+    if (!confirm("Delete this photo?")) return;
+    const ok = await runAdmin("Delete photo", async () => {
       await deletePhoto.mutateAsync({ id: photoId });
-      queryClient.invalidateQueries({ queryKey: getGetTripPhotosQueryKey(id) });
-      queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(id) });
-    }
+    });
+    if (ok) refreshAll();
   };
 
   const handleBulkDelete = async () => {
@@ -308,33 +452,35 @@ export default function TripDetail() {
     if (!confirm(`Delete ${count} photo${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
 
     setIsDeleting(true);
-    try {
-      // Deleted sequentially, not in parallel: each delete recomputes the trip's
-      // cover photo and center on the server from whatever photos are still
-      // present, so requests must be committed one at a time to avoid a race
-      // where two in-flight deletes read the trip before either one's update lands.
+    // Sequential on purpose: the server recounts the album after every delete.
+    await runAdmin("Delete photos", async () => {
       for (const photoId of Array.from(selectedIds)) {
         await deletePhoto.mutateAsync({ id: photoId });
       }
-      queryClient.invalidateQueries({ queryKey: getGetTripPhotosQueryKey(id) });
-      queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(id) });
-      exitSelectMode();
-    } finally {
-      setIsDeleting(false);
-    }
+    });
+    refreshAll(); // also covers a partial failure
+    exitSelectMode();
+    setIsDeleting(false);
   };
 
   const handleSetCover = async (photoId: number) => {
-    await updateTrip.mutateAsync({ id, data: { coverPhotoId: photoId } });
-    queryClient.invalidateQueries({ queryKey: getGetTripQueryKey(id) });
+    const ok = await runAdmin("Set cover", async () => {
+      await updateTrip.mutateAsync({ id, data: { coverPhotoId: photoId } });
+    });
+    if (ok) refreshAll();
   };
 
   if (tripLoading) return <div className="h-full w-full bg-background animate-pulse" />;
   if (!trip) return <div className="p-8 text-muted-foreground">Trip not found.</div>;
 
-  const coverUrl = trip.coverPhotoPath
-    ? thumbUrl({ cloudinaryUrl: trip.coverCloudinaryUrl ?? null, filename: trip.coverPhotoPath.split("/").pop() ?? "" }, 1600)
+  const coverPhoto = trip.coverPhotoPath
+    ? { cloudinaryUrl: trip.coverCloudinaryUrl ?? null, filename: trip.coverPhotoPath.split("/").pop() ?? "" }
     : null;
+  // Full-width banner (not a square crop). The 800px card image is already in
+  // the browser cache from the trips page, so it shows instantly underneath
+  // while the sharp 1920px version loads on top.
+  const coverUrl = coverPhoto ? heroUrl(coverPhoto) : null;
+  const coverPreview = coverPhoto ? cardUrl(coverPhoto, 800) : null;
 
   const photoList = (photos ?? []) as Photo[];
   const allSelected = photoList.length > 0 && selectedIds.size === photoList.length;
@@ -344,7 +490,18 @@ export default function TripDetail() {
       {/* Hero */}
       <div className="relative h-[55vh] md:h-[65vh] w-full shrink-0 overflow-hidden">
         {coverUrl ? (
-          <img src={coverUrl} alt={trip.name} className="absolute inset-0 w-full h-full object-cover" />
+          <>
+            {coverPreview && (
+              <img src={coverPreview} alt="" aria-hidden="true" className="absolute inset-0 w-full h-full object-cover" />
+            )}
+            <img
+              src={coverUrl}
+              alt={trip.name}
+              className="absolute inset-0 w-full h-full object-cover"
+              fetchPriority="high"
+              decoding="async"
+            />
+          </>
         ) : (
           <div className="absolute inset-0 bg-secondary flex items-center justify-center">
             <MapPinIcon className="w-16 h-16 text-muted-foreground opacity-20" />
@@ -355,17 +512,20 @@ export default function TripDetail() {
 
         {/* Nav */}
         <div className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-20">
-          <Link href="/trips">
+          <Link href={getTripsReturnUrl()}>
             <div className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white hover:bg-black/60 cursor-pointer transition-colors border border-white/10">
               <ArrowLeft size={20} />
             </div>
           </Link>
-          <button
-            onClick={handleDeleteTrip}
-            className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white/70 hover:text-destructive hover:bg-black/60 cursor-pointer transition-colors border border-white/10"
-          >
-            <Trash2 size={18} />
-          </button>
+          {isAdmin && (
+            <button
+              onClick={handleDeleteTrip}
+              title="Delete trip"
+              className="w-10 h-10 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center text-white/70 hover:text-destructive hover:bg-black/60 cursor-pointer transition-colors border border-white/10"
+            >
+              <Trash2 size={18} />
+            </button>
+          )}
         </div>
 
         {/* Trip info */}
@@ -387,11 +547,13 @@ export default function TripDetail() {
               </button>
             </div>
           ) : (
-            <div className="group flex items-center gap-4 mb-4 cursor-pointer" onClick={startEdit}>
+            <div className={`group flex items-center gap-4 mb-4 ${isAdmin ? "cursor-pointer" : ""}`} onClick={startEdit}>
               <h1 className="text-5xl md:text-7xl font-serif text-white tracking-tight drop-shadow-lg">{trip.name}</h1>
-              <div className="opacity-0 group-hover:opacity-100 transition-opacity p-2 bg-white/10 rounded-full backdrop-blur-sm">
-                <Edit2 size={18} className="text-white" />
-              </div>
+              {isAdmin && (
+                <div className="opacity-0 group-hover:opacity-100 transition-opacity p-2 bg-white/10 rounded-full backdrop-blur-sm">
+                  <Edit2 size={18} className="text-white" />
+                </div>
+              )}
             </div>
           )}
 
@@ -423,6 +585,7 @@ export default function TripDetail() {
                 ? `${selectedIds.size} selected`
                 : `${photoList.length} photos`}
             </span>
+            {isAdmin && (
             <button
               onClick={() => isSelectMode ? exitSelectMode() : setIsSelectMode(true)}
               className={`flex items-center gap-2 text-xs uppercase tracking-widest px-3 py-1.5 rounded-full border transition-colors ${
@@ -434,6 +597,7 @@ export default function TripDetail() {
               {isSelectMode ? <X size={12} /> : <CheckSquare size={12} />}
               {isSelectMode ? "Cancel" : "Select"}
             </button>
+            )}
           </div>
         )}
 
@@ -468,15 +632,7 @@ export default function TripDetail() {
                     }`}
                     onClick={() => toggleSelect(photo.id)}
                   >
-                    <img
-                      src={thumbUrl(photo, 400)}
-                      alt={photo.originalName}
-                      className={`w-full h-full object-cover transition-all duration-300 ${isSelected ? "scale-95 brightness-75" : ""} ${loadedThumbIds.has(photo.id) ? "opacity-100" : "opacity-0"}`}
-                      loading={i < 12 ? "eager" : "lazy"}
-                      fetchPriority={i < 6 ? "high" : "auto"}
-                      onLoad={() => markThumbLoaded(photo.id)}
-                      draggable={false}
-                    />
+                    <Thumb photo={photo} eager={i < eagerCount} priority={i < 6} onLoaded={onThumbLoaded} className={isSelected ? "scale-95 brightness-75" : ""} />
                     <div className={`absolute inset-0 transition-colors duration-200 ${isSelected ? "bg-primary/20" : "bg-transparent hover:bg-black/20"}`} />
                     <div className={`absolute top-2 right-2 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all duration-200 ${
                       isSelected
@@ -489,27 +645,26 @@ export default function TripDetail() {
                 );
               }
 
+              const tile = (
+                <motion.div
+                  key={photo.id}
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: Math.min(i, 24) * 0.015, duration: 0.3 }}
+                  className="aspect-square group relative overflow-hidden bg-secondary cursor-pointer"
+                  onClick={() => setLightboxIndex(i)}
+                >
+                  <Thumb photo={photo} eager={i < eagerCount} priority={i < 6} onLoaded={onThumbLoaded} className="group-hover:scale-105" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-300" />
+                </motion.div>
+              );
+
+              // Only the admin gets the right-click menu (set cover / delete).
+              if (!isAdmin) return tile;
+
               return (
                 <ContextMenu key={photo.id}>
-                  <ContextMenuTrigger asChild>
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      transition={{ delay: i * 0.015, duration: 0.3 }}
-                      className="aspect-square group relative overflow-hidden bg-secondary cursor-pointer"
-                      onClick={() => setLightboxIndex(i)}
-                    >
-                      <img
-                        src={thumbUrl(photo, 400)}
-                        alt={photo.originalName}
-                        className={`w-full h-full object-cover transition-all duration-300 group-hover:scale-105 ${loadedThumbIds.has(photo.id) ? "opacity-100" : "opacity-0"}`}
-                        loading={i < 12 ? "eager" : "lazy"}
-                        fetchPriority={i < 6 ? "high" : "auto"}
-                        onLoad={() => markThumbLoaded(photo.id)}
-                      />
-                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors duration-300" />
-                    </motion.div>
-                  </ContextMenuTrigger>
+                  <ContextMenuTrigger asChild>{tile}</ContextMenuTrigger>
                   <ContextMenuContent className="bg-card/95 backdrop-blur border-border/40 min-w-[160px]">
                     <ContextMenuItem
                       className="cursor-pointer"
@@ -533,7 +688,7 @@ export default function TripDetail() {
 
       {/* Bulk action bar */}
       <AnimatePresence>
-        {isSelectMode && (
+        {isAdmin && isSelectMode && (
           <motion.div
             initial={{ y: 80, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -578,6 +733,7 @@ export default function TripDetail() {
             photos={photoList}
             initialIndex={lightboxIndex}
             onClose={() => setLightboxIndex(null)}
+            isAdmin={isAdmin}
             onSetCover={handleSetCover}
             onDelete={handleDeletePhoto}
           />

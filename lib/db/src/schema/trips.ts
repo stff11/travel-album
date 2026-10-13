@@ -9,6 +9,8 @@ export const tripsTable = pgTable("trips", {
   endDate: timestamp("end_date", { withTimezone: true }).notNull(),
   coverPhotoId: integer("cover_photo_id"),
   locationName: text("location_name"),
+  // ISO 3166-1 alpha-2 ("IT", "PL", "GB"); the basis of the countries-visited count.
+  countryCode: text("country_code"),
   centerLat: real("center_lat"),
   centerLng: real("center_lng"),
   photoCount: integer("photo_count").notNull().default(0),

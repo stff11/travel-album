@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, photosTable, tripsTable } from "@workspace/db";
-import { eq, and, asc, desc, inArray, type SQL } from "drizzle-orm";
+import { sql } from "drizzle-orm";
+import { eq, and, asc, desc, inArray, isNull, count, type SQL } from "drizzle-orm";
 import {
   GetTripParams,
   UpdateTripParams,
@@ -17,6 +18,7 @@ import {
   MergeTripsResponse,
 } from "@workspace/api-zod";
 import { requireAdmin } from "../lib/auth";
+import { reverseGeocode } from "../lib/geocode";
 import { deleteManyFromCloudinary } from "../lib/cloudinary";
 import { lockTripAssignment } from "../lib/tripGrouping";
 import { livePhotoCount, recomputeTrip, repairAllTrips } from "../lib/tripStats";
@@ -112,6 +114,61 @@ router.post("/trips/repair", requireAdmin, async (_req, res): Promise<void> => {
 // Old name kept so existing bookmarks/scripts keep working.
 router.post("/trips/recompute-centers", requireAdmin, async (_req, res): Promise<void> => {
   res.json(await repairAllTrips());
+});
+
+// ADMIN ONLY — works out the country (ISO code) of trips that don't have one
+// yet, by reverse-geocoding the trip's center (or, if that lands in open water,
+// its first geotagged photo). The geocoder allows ~1 request per second and a
+// serverless function only lives ~30 s, so each call handles a small batch:
+// call it again until `remaining` is 0. Existing names are not touched.
+router.post("/trips/backfill-countries", requireAdmin, async (_req, res): Promise<void> => {
+  const started = Date.now();
+  const BUDGET_MS = 18_000;
+  const DELAY_MS = Number(process.env.NOMINATIM_DELAY_MS ?? 1100);
+
+  const pending = await db
+    .select()
+    .from(tripsTable)
+    .where(isNull(tripsTable.countryCode))
+    .orderBy(asc(tripsTable.id));
+
+  let updated = 0;
+  const failed: number[] = [];
+  let calls = 0;
+  const geocode = async (lat: number, lng: number) => {
+    if (calls++ > 0 && DELAY_MS > 0) await new Promise((r) => setTimeout(r, DELAY_MS));
+    return reverseGeocode(lat, lng);
+  };
+
+  for (const trip of pending) {
+    if (Date.now() - started > BUDGET_MS) break;
+
+    let code: string | null = null;
+    if (trip.centerLat != null && trip.centerLng != null) {
+      code = (await geocode(trip.centerLat, trip.centerLng))?.countryCode ?? null;
+    }
+    if (!code && Date.now() - started <= BUDGET_MS) {
+      const [photo] = await db
+        .select({ lat: photosTable.lat, lng: photosTable.lng })
+        .from(photosTable)
+        .where(and(eq(photosTable.tripId, trip.id), sql`${photosTable.lat} is not null`))
+        .orderBy(asc(photosTable.takenAt))
+        .limit(1);
+      if (photo?.lat != null && photo.lng != null) {
+        code = (await geocode(photo.lat, photo.lng))?.countryCode ?? null;
+      }
+    }
+
+    if (code) {
+      await db.update(tripsTable).set({ countryCode: code }).where(eq(tripsTable.id, trip.id));
+      updated++;
+    } else {
+      failed.push(trip.id);
+    }
+  }
+
+  const [left] = await db.select({ n: count() }).from(tripsTable).where(isNull(tripsTable.countryCode));
+  res.json({ updated, failedTripIds: failed, remaining: left?.n ?? 0 });
 });
 
 router.get("/trips/:id", async (req, res): Promise<void> => {

@@ -2,6 +2,7 @@ import { db, photosTable, tripsTable } from "@workspace/db";
 import { isNull, eq, asc, inArray, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { recomputeTrip, type DbOrTx } from "./tripStats";
+import { reverseGeocode } from "./geocode";
 
 const MAX_DISTANCE_KM = 100;
 const MAX_DAYS_GAP = 5;
@@ -20,38 +21,6 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 
 function daysDiff(a: Date, b: Date): number {
   return Math.abs(a.getTime() - b.getTime()) / (1000 * 60 * 60 * 24);
-}
-
-async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=10`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": "WanderLens/1.0 travel-memory-app" },
-      signal: AbortSignal.timeout(4000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      address?: {
-        city?: string;
-        town?: string;
-        village?: string;
-        county?: string;
-        state?: string;
-        country?: string;
-        country_code?: string;
-      };
-    };
-    const addr = data.address;
-    if (!addr) return null;
-    const place = addr.city ?? addr.town ?? addr.village ?? addr.county ?? addr.state;
-    const country = addr.country;
-    if (place && country) return `${place}, ${country}`;
-    if (country) return country;
-    return null;
-  } catch (err) {
-    logger.warn({ err }, "Reverse geocode failed");
-    return null;
-  }
 }
 
 function generateTripName(locationName: string | null, startDate: Date): string {
@@ -148,7 +117,8 @@ export async function regroupAllPhotos(): Promise<{ tripsCreated: number; photos
     for (const group of groups) {
       if (group.photos.length === 0) continue;
 
-      const locationName = await reverseGeocode(group.centerLat, group.centerLng);
+      const geo = await reverseGeocode(group.centerLat, group.centerLng);
+      const locationName = geo?.locationName ?? null;
 
       const [trip] = await tx
         .insert(tripsTable)
@@ -160,6 +130,7 @@ export async function regroupAllPhotos(): Promise<{ tripsCreated: number; photos
           centerLat: group.centerLat,
           centerLng: group.centerLng,
           locationName,
+          countryCode: geo?.countryCode ?? null,
           photoCount: group.photos.length,
         })
         .returning();
@@ -216,7 +187,8 @@ export async function assignPhotoToTrip(tx: DbOrTx, photo: PhotoRow): Promise<nu
   }
 
   // No matching trip — create a new one with reverse geocoding
-  const locationName = await reverseGeocode(photoLat, photoLng);
+  const geo = await reverseGeocode(photoLat, photoLng);
+  const locationName = geo?.locationName ?? null;
 
   const [newTrip] = await tx
     .insert(tripsTable)
@@ -228,6 +200,7 @@ export async function assignPhotoToTrip(tx: DbOrTx, photo: PhotoRow): Promise<nu
       centerLat: photoLat,
       centerLng: photoLng,
       locationName,
+      countryCode: geo?.countryCode ?? null,
       photoCount: 1,
     })
     .returning();

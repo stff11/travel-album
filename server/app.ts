@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { ensureSchema } from "./lib/ensureSchema";
 
 const app: Express = express();
 
@@ -36,6 +37,16 @@ app.use(express.urlencoded({ extended: true }));
 // response, so unchanged data comes back as a tiny 304.
 app.use("/api", (req, res, next) => {
   if (req.method === "GET") res.set("Cache-Control", "private, no-cache");
+  next();
+});
+
+// Make sure the database has the columns/indexes this version expects.
+app.use("/api", async (_req, _res, next) => {
+  try {
+    await ensureSchema();
+  } catch (err) {
+    logger.error({ err }, "Schema check failed");
+  }
   next();
 });
 
