@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import crypto from "crypto";
 import { db, photosTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
 import {
   ListPhotosQueryParams,
   GetPhotoParams,
@@ -16,6 +16,7 @@ import { assignPhotoToTrip, lockTripAssignment, regroupAllPhotos } from "../lib/
 import { recomputeTrip } from "../lib/tripStats";
 import { uploadToCloudinary, deleteFromCloudinary } from "../lib/cloudinary";
 import { requireAdmin } from "../lib/auth";
+import { geocodeQueueFull, reverseGeocodeQueued } from "../lib/geocode";
 import exifr from "exifr";
 
 const router: IRouter = Router();
@@ -168,6 +169,76 @@ async function placePhotoInTrip(photo: DbPhoto): Promise<void> {
     await assignPhotoToTrip(tx, photo);
   });
 }
+
+// Photos that recently came back with no usable place (open water, geocoder
+// down) — don't ask the geocoder about them again for a while.
+const recentMisses = new Map<number, number>();
+const MISS_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * City / area for one photo, for the caption in the full-size viewer.
+ * Looked up from the photo's GPS position the first time it is asked for, then
+ * stored on the photo — so each photo is geocoded at most once. Nearby photos of
+ * the same album reuse a neighbour's answer without calling the geocoder at all.
+ *
+ *   200 { placeName: "Alghero" }                  known
+ *   200 { placeName: null }                       no GPS / nothing found
+ *   200 { placeName: null, retryable: true }      busy or geocoder unavailable
+ */
+router.get("/photos/:id/place", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetPhotoParams.safeParse({ id: parseInt(raw, 10) });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [photo] = await db.select().from(photosTable).where(eq(photosTable.id, params.data.id));
+  if (!photo) { res.status(404).json({ error: "Photo not found" }); return; }
+
+  const done = (placeName: string | null, extra: Record<string, unknown> = {}) => {
+    // A known place never changes; let the browser keep it.
+    res.set("Cache-Control", placeName ? "private, max-age=86400" : "private, no-cache");
+    res.json({ placeName, ...extra });
+  };
+
+  if (photo.placeName) { done(photo.placeName); return; }
+  if (photo.lat == null || photo.lng == null) { done(null); return; }
+
+  // 1) A photo taken within ~1 km in the same album already knows the answer.
+  const sameAlbum = photo.tripId != null ? eq(photosTable.tripId, photo.tripId) : sql`true`;
+  const [neighbour] = await db
+    .select({ placeName: photosTable.placeName })
+    .from(photosTable)
+    .where(and(
+      sameAlbum,
+      ne(photosTable.id, photo.id),
+      isNotNull(photosTable.placeName),
+      sql`abs(${photosTable.lat} - ${photo.lat}) < 0.01`,
+      sql`abs(${photosTable.lng} - ${photo.lng}) < 0.015`,
+    ))
+    .limit(1);
+  if (neighbour?.placeName) {
+    await db.update(photosTable).set({ placeName: neighbour.placeName }).where(eq(photosTable.id, photo.id));
+    done(neighbour.placeName);
+    return;
+  }
+
+  // 2) Ask the geocoder (politely queued).
+  const missAt = recentMisses.get(photo.id);
+  if (missAt && Date.now() - missAt < MISS_TTL_MS) { done(null); return; }
+  if (geocodeQueueFull()) { done(null, { retryable: true }); return; }
+
+  const geo = await reverseGeocodeQueued(photo.lat, photo.lng, 12);
+  if (!geo?.place) {
+    recentMisses.set(photo.id, Date.now());
+    done(null, { retryable: geo === null });
+    return;
+  }
+
+  await db.update(photosTable).set({ placeName: geo.place }).where(eq(photosTable.id, photo.id));
+  done(geo.place);
+});
 
 router.get("/photos/:id", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;

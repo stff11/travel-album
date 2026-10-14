@@ -15,7 +15,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
 import { memo, useState, useEffect, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Trash2, Calendar, MapPin as MapPinIcon, Check, X, Edit2, ChevronLeft, ChevronRight, CheckSquare, Square } from "lucide-react";
+import { ArrowLeft, Trash2, Calendar, MapPin as MapPinIcon, Check, X, Edit2, ChevronLeft, ChevronRight, CheckSquare, Square, Play } from "lucide-react";
 import { Link } from "wouter";
 import { Input } from "@/components/ui/input";
 import {
@@ -36,6 +36,8 @@ import {
 import { useAuth, isUnauthorized } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { getTripsReturnUrl } from "@/lib/tripsReturn";
+import { Slideshow } from "@/components/Slideshow";
+import { PhotoCaption } from "@/components/PhotoCaption";
 import {
   prefetchImage,
   prefetchAllowed,
@@ -136,6 +138,7 @@ function Lightbox({
   initialIndex,
   onClose,
   isAdmin,
+  onSlideshow,
   onSetCover,
   onDelete,
 }: {
@@ -143,6 +146,7 @@ function Lightbox({
   initialIndex: number;
   onClose: () => void;
   isAdmin: boolean;
+  onSlideshow: (index: number) => void;
   onSetCover: (id: number) => void;
   onDelete: (id: number) => void;
 }) {
@@ -200,9 +204,22 @@ function Lightbox({
       <button
         className="absolute top-5 right-5 z-10 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
         onClick={onClose}
+        aria-label="Close"
       >
         <X size={20} />
       </button>
+
+      {photos.length > 1 && (
+        <button
+          className="absolute top-5 right-[4.5rem] z-10 h-10 pl-3 pr-4 rounded-full bg-white/10 hover:bg-white/20 flex items-center gap-2 text-white text-sm transition-colors"
+          onClick={(e) => { e.stopPropagation(); onSlideshow(index); }}
+          aria-label="Start slideshow"
+          title="Start slideshow from this photo"
+        >
+          <Play size={15} className="fill-current" />
+          <span className="hidden sm:inline">Slideshow</span>
+        </button>
+      )}
 
       <div className="absolute top-5 left-1/2 -translate-x-1/2 text-white/50 text-sm font-mono">
         {index + 1} / {photos.length}
@@ -220,7 +237,7 @@ function Lightbox({
       <ContextMenu>
         <ContextMenuTrigger asChild disabled={!isAdmin}>
           <div
-            className="relative flex items-center justify-center max-w-[90vw] max-h-[90vh]"
+            className="relative flex items-center justify-center max-w-[90vw] max-h-[86vh]"
             style={photo.width && photo.height ? { aspectRatio: `${photo.width} / ${photo.height}` } : undefined}
             onClick={(e) => e.stopPropagation()}
           >
@@ -242,7 +259,7 @@ function Lightbox({
               transition={{ duration: 0.25 }}
               src={photoUrl(photo, LIGHTBOX_WIDTH)}
               alt={photo.originalName}
-              className="relative max-w-[90vw] max-h-[90vh] object-contain select-none rounded"
+              className="relative max-w-[90vw] max-h-[86vh] object-contain select-none rounded"
               onContextMenu={(e) => isAdmin && e.stopPropagation()}
               onLoad={() => markLoaded(photo.id)}
               draggable={false}
@@ -264,6 +281,14 @@ function Lightbox({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      {/* Area / city and day of the photo being viewed */}
+      <PhotoCaption
+        key={photo.id}
+        photo={photo}
+        pill
+        className="absolute bottom-4 inset-x-0 mx-auto w-fit max-w-[calc(100vw-2rem)]"
+      />
 
       {index < photos.length - 1 && (
         <button
@@ -299,6 +324,7 @@ export default function TripDetail() {
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [slideshowStart, setSlideshowStart] = useState<number | null>(null);
   const [isSelectMode, setIsSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isDeleting, setIsDeleting] = useState(false);
@@ -585,19 +611,32 @@ export default function TripDetail() {
                 ? `${selectedIds.size} selected`
                 : `${photoList.length} photos`}
             </span>
-            {isAdmin && (
-            <button
-              onClick={() => isSelectMode ? exitSelectMode() : setIsSelectMode(true)}
-              className={`flex items-center gap-2 text-xs uppercase tracking-widest px-3 py-1.5 rounded-full border transition-colors ${
-                isSelectMode
-                  ? "border-primary/60 text-primary bg-primary/10"
-                  : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border"
-              }`}
-            >
-              {isSelectMode ? <X size={12} /> : <CheckSquare size={12} />}
-              {isSelectMode ? "Cancel" : "Select"}
-            </button>
-            )}
+            <div className="flex items-center gap-2">
+              {photoList.length > 1 && !isSelectMode && (
+                <button
+                  onClick={() => setSlideshowStart(0)}
+                  className="flex items-center gap-2 text-xs uppercase tracking-widest px-3 py-1.5 rounded-full border border-border/50 text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                  aria-label="Start slideshow"
+                  title="Full-screen slideshow"
+                >
+                  <Play size={12} className="fill-current" />
+                  Slideshow
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  onClick={() => isSelectMode ? exitSelectMode() : setIsSelectMode(true)}
+                  className={`flex items-center gap-2 text-xs uppercase tracking-widest px-3 py-1.5 rounded-full border transition-colors ${
+                    isSelectMode
+                      ? "border-primary/60 text-primary bg-primary/10"
+                      : "border-border/50 text-muted-foreground hover:text-foreground hover:border-border"
+                  }`}
+                >
+                  {isSelectMode ? <X size={12} /> : <CheckSquare size={12} />}
+                  {isSelectMode ? "Cancel" : "Select"}
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -648,6 +687,7 @@ export default function TripDetail() {
               const tile = (
                 <motion.div
                   key={photo.id}
+                  data-photo-id={photo.id}
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{ delay: Math.min(i, 24) * 0.015, duration: 0.3 }}
@@ -734,8 +774,31 @@ export default function TripDetail() {
             initialIndex={lightboxIndex}
             onClose={() => setLightboxIndex(null)}
             isAdmin={isAdmin}
+            onSlideshow={(i) => { setLightboxIndex(null); setSlideshowStart(i); }}
             onSetCover={handleSetCover}
             onDelete={handleDeletePhoto}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Full-screen automatic slideshow */}
+      <AnimatePresence>
+        {slideshowStart !== null && photoList.length > 1 && !isSelectMode && (
+          <Slideshow
+            photos={photoList}
+            startIndex={slideshowStart}
+            title={trip.name}
+            onClose={(lastPhotoId) => {
+              setSlideshowStart(null);
+              // Bring the grid to the photo the slideshow ended on.
+              if (lastPhotoId != null) {
+                setTimeout(() => {
+                  document
+                    .querySelector(`[data-photo-id="${lastPhotoId}"]`)
+                    ?.scrollIntoView({ block: "center" });
+                }, 60);
+              }
+            }}
           />
         )}
       </AnimatePresence>

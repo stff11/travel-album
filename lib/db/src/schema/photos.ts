@@ -14,6 +14,8 @@ export const photosTable = pgTable("photos", {
   cloudinaryUrl: text("cloudinary_url").notNull(),
   lat: real("lat"),
   lng: real("lng"),
+  // City / area where the photo was taken (English), looked up lazily from lat/lng.
+  placeName: text("place_name"),
   takenAt: timestamp("taken_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

@@ -138,3 +138,12 @@
 .cinematic-popup .leaflet-popup-close-button:hover {
   color: rgba(255, 255, 255, 0.9);
 }
+/* ---- Slideshow ----------------------------------------------------------- */
+@keyframes wl-kenburns {
+  from { transform: scale(1); }
+  to   { transform: scale(1.07); }
+}
+@keyframes wl-progress {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}

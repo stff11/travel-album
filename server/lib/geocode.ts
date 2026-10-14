@@ -5,6 +5,8 @@ export type GeocodeResult = {
   locationName: string | null;
   /** ISO 3166-1 alpha-2, upper case ("IT", "PL", "GB"). Same in every language. */
   countryCode: string | null;
+  /** Just the city / town / area ("Alghero"), no country. For photo captions. */
+  place: string | null;
 };
 
 /**
@@ -16,13 +18,19 @@ export type GeocodeResult = {
  * is a bad thing to count by: "Italy"/"Italia", "UK"/"England"/"Scotland" and
  * "Κύπρος - Kıbrıs" are all the same country as far as a traveller is concerned.
  *
- * Returns null when nothing could be resolved (open sea, network error, ...).
+ * Returns null only when the lookup itself failed (network error, HTTP error).
+ * When the service answered but has nothing for that spot (open sea), every
+ * field of the result is null.
  */
-export async function reverseGeocode(lat: number, lng: number): Promise<GeocodeResult | null> {
+export async function reverseGeocode(
+  lat: number,
+  lng: number,
+  zoom = 10,
+): Promise<GeocodeResult | null> {
   try {
     const url =
       `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}` +
-      `&format=json&zoom=10&addressdetails=1&accept-language=en`;
+      `&format=json&zoom=${zoom}&addressdetails=1&accept-language=en`;
     const res = await fetch(url, {
       headers: {
         "User-Agent": "WanderLens/1.0 travel-memory-app",
@@ -36,6 +44,9 @@ export async function reverseGeocode(lat: number, lng: number): Promise<GeocodeR
         city?: string;
         town?: string;
         village?: string;
+        municipality?: string;
+        suburb?: string;
+        city_district?: string;
         county?: string;
         state?: string;
         country?: string;
@@ -43,7 +54,8 @@ export async function reverseGeocode(lat: number, lng: number): Promise<GeocodeR
       };
     };
     const addr = data.address;
-    if (!addr) return null;
+    // The service answered but knows nothing here (open sea, ...): not an error.
+    if (!addr) return { locationName: null, countryCode: null, place: null };
 
     const place = addr.city ?? addr.town ?? addr.village ?? addr.county ?? addr.state;
     const country = addr.country;
@@ -54,10 +66,55 @@ export async function reverseGeocode(lat: number, lng: number): Promise<GeocodeR
     const locationName =
       place && country ? `${place}, ${country}` : (country ?? null);
 
-    if (!locationName && !countryCode) return null;
-    return { locationName, countryCode };
+    // Most specific sensible "area": a city/town/village, else a municipality or
+    // suburb, else the county/state.
+    const area =
+      addr.city ?? addr.town ?? addr.village ?? addr.municipality ??
+      addr.suburb ?? addr.city_district ?? addr.county ?? addr.state ?? null;
+
+    if (!locationName && !countryCode && !area) {
+      return { locationName: null, countryCode: null, place: null };
+    }
+    return { locationName, countryCode, place: area };
   } catch (err) {
     logger.warn({ err }, "Reverse geocode failed");
     return null;
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Polite, queued access for requests that come from visitors (photo captions).
+//
+// Nominatim's usage policy allows about one request per second. Every call made
+// through this function is spaced out by at least MIN_GAP_MS, and when too many
+// are already waiting the caller is told to try again later instead of piling up.
+// (The gap is per server instance — on serverless that is a best effort.)
+// ---------------------------------------------------------------------------
+const MAX_WAITING = 4;
+let chain: Promise<unknown> = Promise.resolve();
+let waiting = 0;
+let lastCallAt = 0;
+
+export function geocodeQueueFull(): boolean {
+  return waiting >= MAX_WAITING;
+}
+
+export function reverseGeocodeQueued(
+  lat: number,
+  lng: number,
+  zoom = 12,
+): Promise<GeocodeResult | null> {
+  const gap = Number(process.env.NOMINATIM_DELAY_MS ?? 1100);
+  waiting++;
+  const run = chain.then(async () => {
+    const wait = Math.max(0, lastCallAt + gap - Date.now());
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastCallAt = Date.now();
+    return reverseGeocode(lat, lng, zoom);
+  });
+  const done = () => { waiting--; };
+  run.then(done, done);
+  chain = run.catch(() => undefined);
+  return run;
 }
